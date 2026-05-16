@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NetWatch — Network Monitoring System</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&family=Exo+2:wght@300;400;600;800&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #060d14;
+    --panel: #0b1623;
+    --panel2: #0e1d2e;
+    --border: #1a3a5c;
+    --accent: #00d4ff;
+    --accent2: #00ff88;
+    --accent3: #ff6b35;
+    --warn: #ffcc00;
+    --danger: #ff3355;
+    --text: #c8e0f4;
+    --muted: #4a7090;
+    --glow: 0 0 20px rgba(0,212,255,0.3);
+    --glow2: 0 0 20px rgba(0,255,136,0.3);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 15px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  body::before {
+    content:'';
+    position:fixed;
+    inset:0;
+    background:
+      radial-gradient(ellipse 80% 40% at 10% 10%, rgba(0,212,255,0.04) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 60% at 90% 80%, rgba(0,255,136,0.03) 0%, transparent 60%);
+    pointer-events:none;
+    z-index:0;
+  }
+
+  /* HEADER */
+  header {
+    position: sticky; top:0; z-index:100;
+    background: rgba(6,13,20,0.95);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(12px);
+    padding: 0 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 58px;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+    font-family: 'Exo 2', sans-serif; font-weight:800; font-size:22px;
+    letter-spacing: 2px; color: var(--accent);
+    text-shadow: var(--glow);
+  }
+  .logo-icon {
+    width:34px; height:34px; border:2px solid var(--accent);
+    border-radius:6px; display:flex; align-items:center; justify-content:center;
+    box-shadow: var(--glow); position:relative; overflow:hidden;
+  }
+  .logo-icon::after {
+    content:''; position:absolute;
+    width:60%; height:60%;
+    border:2px solid var(--accent2); border-radius:50%;
+    animation: pulse-ring 2s ease-in-out infinite;
+  }
+  @keyframes pulse-ring { 0%,100%{transform:scale(0.6);opacity:1} 50%{transform:scale(1.1);opacity:0.4} }
+  .logo span { color: var(--accent2); }
+
+  .header-right { display:flex; align-items:center; gap:20px; }
+  .status-bar { display:flex; gap:16px; align-items:center; }
+  .status-pill {
+    display:flex; align-items:center; gap:6px;
+    background: rgba(0,212,255,0.08); border:1px solid rgba(0,212,255,0.2);
+    padding:4px 12px; border-radius:20px; font-size:12px; font-weight:600;
+    letter-spacing:1px;
+  }
+  .dot { width:7px; height:7px; border-radius:50%; }
+  .dot-green { background:var(--accent2); box-shadow: 0 0 8px var(--accent2); animation: blink 2s ease-in-out infinite; }
+  .dot-yellow { background:var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .dot-red { background:var(--danger); box-shadow: 0 0 8px var(--danger); }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .time-display {
+    font-family:'Share Tech Mono'; font-size:13px; color:var(--muted);
+    letter-spacing:1px;
+  }
+  #live-time { color: var(--accent); }
+
+  /* LAYOUT */
+  .app { position:relative; z-index:1; }
+  .sidebar {
+    position:fixed; left:0; top:58px; bottom:0; width:220px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    padding: 20px 0;
+    z-index:50;
+    display:flex; flex-direction:column;
+  }
+  .nav-section { margin-bottom:8px; }
+  .nav-label {
+    font-size:10px; letter-spacing:2px; color:var(--muted);
+    padding: 8px 20px 4px;
+    font-family:'Share Tech Mono';
+  }
+  .nav-item {
+    display:flex; align-items:center; gap:10px;
+    padding:10px 20px; cursor:pointer;
+    transition: all 0.2s;
+    border-left: 3px solid transparent;
+    color: var(--muted); font-weight:600; font-size:14px;
+    letter-spacing:0.5px;
+  }
+  .nav-item:hover { background:rgba(0,212,255,0.05); color:var(--text); }
+  .nav-item.active {
+    background:rgba(0,212,255,0.08);
+    border-left-color: var(--accent);
+    color: var(--accent);
+  }
+  .nav-icon { font-size:16px; width:20px; text-align:center; }
+  .nav-badge {
+    margin-left:auto; background:var(--danger);
+    color:#fff; font-size:10px; padding:1px 6px; border-radius:10px;
+    font-family:'Share Tech Mono';
+  }
+  .sidebar-footer { margin-top:auto; padding:16px 20px; border-top:1px solid var(--border); }
+  .scan-btn {
+    width:100%; padding:10px; background:linear-gradient(135deg, var(--accent), #0088aa);
+    border:none; border-radius:6px; color:#000; font-family:'Exo 2'; font-weight:700;
+    font-size:13px; letter-spacing:1px; cursor:pointer;
+    transition: all 0.3s; text-transform:uppercase;
+  }
+  .scan-btn:hover { box-shadow: var(--glow); transform:translateY(-1px); }
+  .scan-btn.scanning { animation: scan-pulse 1s ease-in-out infinite; }
+  @keyframes scan-pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+
+  /* MAIN CONTENT */
+  .main { margin-left:220px; padding:24px; padding-top:24px; }
+
+  /* PAGE SECTIONS */
+  .page { display:none; }
+  .page.active { display:block; }
+
+  /* KPI CARDS */
+  .kpi-grid {
+    display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:24px;
+  }
+  .kpi-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius:10px; padding:18px 20px;
+    position:relative; overflow:hidden;
+    transition: border-color 0.3s;
+  }
+  .kpi-card:hover { border-color: var(--accent); }
+  .kpi-card::before {
+    content:''; position:absolute; top:0; left:0; right:0; height:2px;
+  }
+  .kpi-card.green::before { background:linear-gradient(90deg,transparent,var(--accent2),transparent); }
+  .kpi-card.blue::before  { background:linear-gradient(90deg,transparent,var(--accent),transparent); }
+  .kpi-card.orange::before{ background:linear-gradient(90deg,transparent,var(--accent3),transparent); }
+  .kpi-card.red::before   { background:linear-gradient(90deg,transparent,var(--danger),transparent); }
+
+  .kpi-label { font-size:11px; letter-spacing:2px; color:var(--muted); text-transform:uppercase; margin-bottom:8px; font-family:'Share Tech Mono'; }
+  .kpi-value { font-family:'Exo 2'; font-size:36px; font-weight:800; line-height:1; margin-bottom:6px; }
+  .kpi-value.green { color:var(--accent2); text-shadow:var(--glow2); }
+  .kpi-value.blue  { color:var(--accent); text-shadow:var(--glow); }
+  .kpi-value.orange{ color:var(--accent3); }
+  .kpi-value.red   { color:var(--danger); }
+  .kpi-sub { font-size:12px; color:var(--muted); }
+  .kpi-icon { position:absolute; right:16px; top:50%; transform:translateY(-50%); font-size:36px; opacity:0.08; }
+
+  /* GRID LAYOUTS */
+  .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+  .grid-3 { display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px; }
+
+  /* PANEL */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius:10px; overflow:hidden;
+  }
+  .panel-header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 18px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel2);
+  }
+  .panel-title {
+    font-family:'Exo 2'; font-weight:700; font-size:14px;
+    letter-spacing:1px; color:var(--accent);
+    display:flex; align-items:center; gap:8px;
+  }
+  .panel-body { padding:16px; }
+
+  /* DEVICE TABLE */
+  .device-table { width:100%; border-collapse:collapse; }
+  .device-table th {
+    font-size:10px; letter-spacing:2px; color:var(--muted);
+    text-align:left; padding:8px 12px;
+    border-bottom:1px solid var(--border);
+    font-family:'Share Tech Mono';
+  }
+  .device-table td { padding:10px 12px; border-bottom:1px solid rgba(26,58,92,0.4); font-size:13px; }
+  .device-table tr:last-child td { border-bottom:none; }
+  .device-table tr:hover td { background:rgba(0,212,255,0.03); }
+
+  .status-badge {
+    display:inline-flex; align-items:center; gap:5px;
+    padding:3px 10px; border-radius:12px; font-size:11px; font-weight:600;
+    letter-spacing:0.5px;
+  }
+  .badge-up   { background:rgba(0,255,136,0.12); color:var(--accent2); border:1px solid rgba(0,255,136,0.3); }
+  .badge-down { background:rgba(255,51,85,0.12); color:var(--danger); border:1px solid rgba(255,51,85,0.3); }
+  .badge-warn { background:rgba(255,204,0,0.12); color:var(--warn); border:1px solid rgba(255,204,0,0.3); }
+
+  .ip-text { font-family:'Share Tech Mono'; font-size:12px; color:var(--muted); }
+  .ping-bar {
+    display:flex; align-items:center; gap:8px;
+  }
+  .ping-val { font-family:'Share Tech Mono'; font-size:12px; width:45px; }
+  .ping-val.good { color:var(--accent2); }
+  .ping-val.ok { color:var(--warn); }
+  .ping-val.bad { color:var(--danger); }
+  .ping-mini { height:4px; border-radius:2px; background:rgba(0,212,255,0.1); overflow:hidden; width:60px; }
+  .ping-fill { height:100%; border-radius:2px; }
+
+  /* CHART CONTAINERS */
+  .chart-container { position:relative; }
+  canvas { max-width:100%; }
+
+  /* ALERT LIST */
+  .alert-item {
+    display:flex; align-items:flex-start; gap:12px;
+    padding:10px 0; border-bottom:1px solid rgba(26,58,92,0.4);
+  }
+  .alert-item:last-child { border-bottom:none; }
+  .alert-dot { width:8px; height:8px; border-radius:50%; margin-top:4px; flex-shrink:0; }
+  .alert-dot.crit { background:var(--danger); box-shadow:0 0 8px var(--danger); }
+  .alert-dot.warn { background:var(--warn); box-shadow:0 0 8px var(--warn); }
+  .alert-dot.info { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .alert-msg { font-size:13px; line-height:1.4; }
+  .alert-time { font-family:'Share Tech Mono'; font-size:10px; color:var(--muted); margin-top:2px; }
+
+  /* TOPOLOGY MAP */
+  #topology-canvas { width:100%; height:340px; cursor:grab; }
+  #topology-canvas:active { cursor:grabbing; }
+
+  /* GAUGE */
+  .gauge-row { display:flex; gap:24px; flex-wrap:wrap; }
+  .gauge-item { flex:1; min-width:120px; text-align:center; }
+  .gauge-label { font-size:11px; color:var(--muted); letter-spacing:1px; margin-top:6px; text-transform:uppercase; font-family:'Share Tech Mono'; }
+  .gauge-val { font-family:'Exo 2'; font-size:22px; font-weight:700; color:var(--accent); }
+
+  /* PROGRESS BARS */
+  .resource-row { margin-bottom:14px; }
+  .resource-header { display:flex; justify-content:space-between; margin-bottom:6px; font-size:12px; }
+  .resource-name { color:var(--text); font-weight:600; }
+  .resource-pct { font-family:'Share Tech Mono'; color:var(--accent); }
+  .resource-track { height:6px; background:rgba(0,212,255,0.1); border-radius:3px; overflow:hidden; }
+  .resource-fill { height:100%; border-radius:3px; transition: width 1s ease; }
+  .fill-green { background:linear-gradient(90deg,#00a060,var(--accent2)); }
+  .fill-blue  { background:linear-gradient(90deg,#005080,var(--accent)); }
+  .fill-orange{ background:linear-gradient(90deg,#882200,var(--accent3)); }
+  .fill-red   { background:linear-gradient(90deg,#880022,var(--danger)); }
+
+  /* PAGE TITLE */
+  .page-title {
+    font-family:'Exo 2'; font-weight:800; font-size:24px;
+    color:var(--text); letter-spacing:2px;
+    margin-bottom:20px;
+    display:flex; align-items:center; gap:12px;
+  }
+  .page-title span { color:var(--accent); }
+
+  /* SCAN ANIMATION */
+  .scan-line {
+    position:absolute; left:0; right:0; height:2px;
+    background:linear-gradient(90deg,transparent,var(--accent),transparent);
+    opacity:0; pointer-events:none;
+    animation: scan-sweep 3s ease-in-out infinite;
+    box-shadow:0 0 12px var(--accent);
+  }
+  @keyframes scan-sweep {
+    0%{top:0;opacity:0} 10%{opacity:0.8} 90%{opacity:0.8} 100%{top:100%;opacity:0}
+  }
+
+  /* SPARKLINE */
+  .sparkline { display:inline-block; vertical-align:middle; }
+
+  /* INTERFACE TABLE */
+  .iface-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .iface-card {
+    background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:14px;
+    transition: border-color 0.3s;
+  }
+  .iface-card:hover { border-color: var(--accent); }
+  .iface-name { font-family:'Share Tech Mono'; font-size:13px; color:var(--accent); margin-bottom:8px; }
+  .iface-stat { font-size:12px; color:var(--muted); margin:3px 0; }
+  .iface-stat b { color:var(--text); }
+
+  /* SCROLLBAR */
+  ::-webkit-scrollbar { width:4px; }
+  ::-webkit-scrollbar-track { background:var(--bg); }
+  ::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+
+  /* RESPONSIVE */
+  @media(max-width:1200px) { .kpi-grid { grid-template-columns:repeat(2,1fr); } }
+  @media(max-width:900px) {
+    .sidebar { transform:translateX(-100%); }
+    .main { margin-left:0; }
+    .grid-2,.grid-3 { grid-template-columns:1fr; }
+  }
+
+  /* FLICKER ANIMATION */
+  @keyframes flicker { 0%,95%,100%{opacity:1} 97%{opacity:0.8} }
+
+  /* TOOLTIP */
+  .tooltip {
+    position:absolute; background:rgba(11,22,35,0.95); border:1px solid var(--border);
+    padding:8px 12px; border-radius:6px; font-size:12px; pointer-events:none;
+    opacity:0; transition:opacity 0.2s; z-index:999; white-space:nowrap;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon"></div>
+    NET<span>WATCH</span>
+  </div>
+  <div class="header-right">
+    <div class="status-bar">
+      <div class="status-pill"><div class="dot dot-green"></div>SYSTEM ONLINE</div>
+      <div class="status-pill"><div class="dot dot-yellow"></div>2 WARNINGS</div>
+      <div class="status-pill"><div class="dot dot-red"></div>1 CRITICAL</div>
+    </div>
+    <div class="time-display">UTC+05:30 &nbsp;|&nbsp; <span id="live-time">--:--:--</span></div>
+  </div>
+</header>
+
+<div class="app">
+  <nav class="sidebar">
+    <div class="nav-section">
+      <div class="nav-label">MONITOR</div>
+      <div class="nav-item active" onclick="showPage('dashboard',this)">
+        <span class="nav-icon">⬡</span> Dashboard
+      </div>
+      <div class="nav-item" onclick="showPage('devices',this)">
+        <span class="nav-icon">◈</span> Devices
+      </div>
+      <div class="nav-item" onclick="showPage('topology',this)">
+        <span class="nav-icon">◉</span> Topology
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">ANALYTICS</div>
+      <div class="nav-item" onclick="showPage('traffic',this)">
+        <span class="nav-icon">▲</span> Traffic
+      </div>
+      <div class="nav-item" onclick="showPage('performance',this)">
+        <span class="nav-icon">◎</span> Performance
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">ALERTS</div>
+      <div class="nav-item" onclick="showPage('alerts',this)">
+        <span class="nav-icon">⚠</span> Alerts
+        <span class="nav-badge" id="alert-badge">3</span>
+      </div>
+    </div>
+    <div class="sidebar-footer">
+      <button class="scan-btn" id="scan-btn" onclick="runScan()">⟳ &nbsp;SCAN NETWORK</button>
+    </div>
+  </nav>
+
+  <main class="main">
+
+    <!-- DASHBOARD -->
+    <div class="page active" id="page-dashboard">
+      <div class="page-title">⬡ &nbsp;<span>Dashboard</span> &nbsp;Overview</div>
+      <div class="kpi-grid">
+        <div class="kpi-card blue">
+          <div class="kpi-label">Total Devices</div>
+          <div class="kpi-value blue" id="kpi-total">24</div>
+          <div class="kpi-sub">Discovered on network</div>
+          <div class="kpi-icon">◈</div>
+        </div>
+        <div class="kpi-card green">
+          <div class="kpi-label">Online</div>
+          <div class="kpi-value green" id="kpi-online">21</div>
+          <div class="kpi-sub">87.5% availability</div>
+          <div class="kpi-icon">✓</div>
+        </div>
+        <div class="kpi-card orange">
+          <div class="kpi-label">Avg Latency</div>
+          <div class="kpi-value orange" id="kpi-latency">18ms</div>
+          <div class="kpi-sub">Across all hosts</div>
+          <div class="kpi-icon">⊙</div>
+        </div>
+        <div class="kpi-card red">
+          <div class="kpi-label">Offline</div>
+          <div class="kpi-value red" id="kpi-offline">3</div>
+          <div class="kpi-sub">Require attention</div>
+          <div class="kpi-icon">✕</div>
+        </div>
+      </div>
+
+      <div class="grid-3">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">▲ Network Traffic (Mbps)</div>
+            <div style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono'">LIVE</div>
+          </div>
+          <div class="panel-body" style="position:relative;">
+            <div class="scan-line"></div>
+            <div class="chart-container" style="height:220px;">
+              <canvas id="trafficChart"></canvas>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">◎ Device Status</div>
+          </div>
+          <div class="panel-body">
+            <div class="chart-container" style="height:160px;">
+              <canvas id="statusChart"></canvas>
+            </div>
+            <div style="margin-top:12px;">
+              <div class="resource-row">
+                <div class="resource-header"><span class="resource-name">Network Load</span><span class="resource-pct" id="net-load">62%</span></div>
+                <div class="resource-track"><div class="resource-fill fill-blue" id="net-load-bar" style="width:62%"></div></div>
+              </div>
+              <div class="resource-row">
+                <div class="resource-header"><span class="resource-name">Bandwidth Usage</span><span class="resource-pct" id="bw-pct">44%</span></div>
+                <div class="resource-track"><div class="resource-fill fill-green" id="bw-bar" style="width:44%"></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">◈ Recent Device Activity</div>
+          </div>
+          <div class="panel-body" style="padding:0;">
+            <table class="device-table">
+              <thead>
+                <tr>
+                  <th>HOSTNAME</th>
+                  <th>IP ADDRESS</th>
+                  <th>STATUS</th>
+                  <th>LATENCY</th>
+                </tr>
+              </thead>
+              <tbody id="dash-device-list"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">⚠ Recent Alerts</div>
+            <div style="font-size:11px;color:var(--danger);font-family:'Share Tech Mono'">3 ACTIVE</div>
+          </div>
+          <div class="panel-body" id="dash-alerts"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DEVICES -->
+    <div class="page" id="page-devices">
+      <div class="page-title">◈ &nbsp;<span>Device</span> &nbsp;Inventory</div>
+      <div class="panel" style="margin-bottom:16px;">
+        <div class="panel-header">
+          <div class="panel-title">All Discovered Hosts</div>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <input id="device-search" placeholder="Search hostname or IP..." style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:5px;font-family:inherit;font-size:13px;width:220px;" oninput="filterDevices()"/>
+          </div>
+        </div>
+        <div style="padding:0;">
+          <table class="device-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>HOSTNAME</th>
+                <th>IP ADDRESS</th>
+                <th>MAC ADDRESS</th>
+                <th>TYPE</th>
+                <th>STATUS</th>
+                <th>LATENCY</th>
+                <th>UPTIME</th>
+              </tr>
+            </thead>
+            <tbody id="full-device-list"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TOPOLOGY -->
+    <div class="page" id="page-topology">
+      <div class="page-title">◉ &nbsp;<span>Network</span> &nbsp;Topology</div>
+      <div class="panel" style="margin-bottom:16px;">
+        <div class="panel-header">
+          <div class="panel-title">Live Network Map</div>
+          <div style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono'">CLICK NODES TO INSPECT</div>
+        </div>
+        <div class="panel-body" style="padding:0;position:relative;">
+          <canvas id="topology-canvas" width="900" height="340"></canvas>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">Legend</div></div>
+          <div class="panel-body">
+            <div style="display:flex;flex-wrap:wrap;gap:16px;">
+              <div style="display:flex;align-items:center;gap:8px;font-size:13px;"><span style="width:12px;height:12px;border-radius:50%;background:#00ff88;display:inline-block;"></span>Online Host</div>
+              <div style="display:flex;align-items:center;gap:8px;font-size:13px;"><span style="width:12px;height:12px;border-radius:50%;background:#ff3355;display:inline-block;"></span>Offline Host</div>
+              <div style="display:flex;align-items:center;gap:8px;font-size:13px;"><span style="width:12px;height:12px;border-radius:50%;background:#00d4ff;display:inline-block;"></span>Router / Switch</div>
+              <div style="display:flex;align-items:center;gap:8px;font-size:13px;"><span style="width:12px;height:12px;border-radius:50%;background:#ffcc00;display:inline-block;"></span>Warning</div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title" id="topo-selected-title">Select a Node</div></div>
+          <div class="panel-body" id="topo-info" style="font-size:13px;color:var(--muted);">Click on any device node to view details.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TRAFFIC -->
+    <div class="page" id="page-traffic">
+      <div class="page-title">▲ &nbsp;<span>Traffic</span> &nbsp;Analysis</div>
+      <div class="panel" style="margin-bottom:16px;">
+        <div class="panel-header">
+          <div class="panel-title">Bandwidth Usage — Last 60 Seconds</div>
+          <div style="display:flex;gap:16px;font-size:12px;font-family:'Share Tech Mono';">
+            <span style="color:var(--accent)">▲ IN: <span id="bw-in">--</span> Mbps</span>
+            <span style="color:var(--accent2)">▼ OUT: <span id="bw-out">--</span> Mbps</span>
+          </div>
+        </div>
+        <div class="panel-body" style="height:260px;">
+          <canvas id="bigTrafficChart"></canvas>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">Protocol Distribution</div></div>
+          <div class="panel-body" style="height:220px;">
+            <canvas id="protoChart"></canvas>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">Top Talkers</div></div>
+          <div class="panel-body" id="top-talkers"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PERFORMANCE -->
+    <div class="page" id="page-performance">
+      <div class="page-title">◎ &nbsp;<span>Performance</span> &nbsp;Metrics</div>
+      <div class="iface-grid" style="margin-bottom:16px;" id="iface-cards"></div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">Latency per Device (ms)</div></div>
+          <div class="panel-body" style="height:240px;"><canvas id="latencyChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">Packet Loss (%)</div></div>
+          <div class="panel-body" style="height:240px;"><canvas id="packetLossChart"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ALERTS -->
+    <div class="page" id="page-alerts">
+      <div class="page-title">⚠ &nbsp;<span>Alert</span> &nbsp;Center</div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);">
+        <div class="kpi-card red">
+          <div class="kpi-label">Critical</div>
+          <div class="kpi-value red">1</div>
+          <div class="kpi-sub">Immediate action required</div>
+        </div>
+        <div class="kpi-card orange">
+          <div class="kpi-label">Warning</div>
+          <div class="kpi-value orange">2</div>
+          <div class="kpi-sub">Monitor closely</div>
+        </div>
+        <div class="kpi-card blue">
+          <div class="kpi-label">Info</div>
+          <div class="kpi-value blue">5</div>
+          <div class="kpi-sub">Informational events</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">All Alerts</div>
+          <div style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono'">AUTO-REFRESH: 30s</div>
+        </div>
+        <div class="panel-body" id="all-alerts-list"></div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ── DATA ──────────────────────────────────────────────────────────────────────
+const devices = [
+  {id:1, host:'gateway-01',    ip:'192.168.1.1',  mac:'A4:8C:01:FF:22:11', type:'Router',   status:'up',   ping:4,  uptime:'99.9%'},
+  {id:2, host:'core-switch',   ip:'192.168.1.2',  mac:'B0:CD:02:AA:33:44', type:'Switch',   status:'up',   ping:2,  uptime:'99.8%'},
+  {id:3, host:'srv-web-01',    ip:'192.168.1.10', mac:'C2:EF:03:BB:55:66', type:'Server',   status:'up',   ping:8,  uptime:'99.5%'},
+  {id:4, host:'srv-db-01',     ip:'192.168.1.11', mac:'D4:10:04:CC:77:88', type:'Server',   status:'up',   ping:6,  uptime:'99.7%'},
+  {id:5, host:'srv-mail',      ip:'192.168.1.12', mac:'E6:32:05:DD:99:AA', type:'Server',   status:'warn', ping:42, uptime:'97.2%'},
+  {id:6, host:'workstation-01',ip:'192.168.1.20', mac:'F8:54:06:EE:BB:CC', type:'PC',       status:'up',   ping:12, uptime:'95.1%'},
+  {id:7, host:'workstation-02',ip:'192.168.1.21', mac:'0A:76:07:FF:DD:EE', type:'PC',       status:'up',   ping:15, uptime:'92.3%'},
+  {id:8, host:'workstation-03',ip:'192.168.1.22', mac:'1C:98:08:00:FF:11', type:'PC',       status:'up',   ping:11, uptime:'94.8%'},
+  {id:9, host:'laptop-ceo',    ip:'192.168.1.30', mac:'2E:BA:09:11:22:33', type:'Laptop',   status:'up',   ping:22, uptime:'78.5%'},
+  {id:10,host:'printer-floor1',ip:'192.168.1.40', mac:'40:DC:0A:22:44:55', type:'Printer',  status:'down', ping:0,  uptime:'81.0%'},
+  {id:11,host:'ip-cam-01',     ip:'192.168.1.50', mac:'52:FE:0B:33:66:77', type:'Camera',   status:'up',   ping:18, uptime:'99.1%'},
+  {id:12,host:'ip-cam-02',     ip:'192.168.1.51', mac:'64:10:0C:44:88:99', type:'Camera',   status:'down', ping:0,  uptime:'85.3%'},
+  {id:13,host:'nas-storage',   ip:'192.168.1.60', mac:'76:32:0D:55:AA:BB', type:'NAS',      status:'up',   ping:9,  uptime:'99.6%'},
+  {id:14,host:'wifi-ap-01',    ip:'192.168.1.70', mac:'88:54:0E:66:CC:DD', type:'Access Point',status:'up',ping:5, uptime:'99.3%'},
+  {id:15,host:'wifi-ap-02',    ip:'192.168.1.71', mac:'9A:76:0F:77:EE:FF', type:'Access Point',status:'warn',ping:88,uptime:'96.0%'},
+  {id:16,host:'phone-ext-101', ip:'192.168.1.80', mac:'AC:98:10:88:11:22', type:'VoIP',     status:'up',   ping:7,  uptime:'98.2%'},
+  {id:17,host:'phone-ext-102', ip:'192.168.1.81', mac:'BE:BA:11:99:33:44', type:'VoIP',     status:'up',   ping:8,  uptime:'97.9%'},
+  {id:18,host:'firewall',      ip:'192.168.1.254',mac:'D0:DC:12:AA:55:66', type:'Firewall', status:'up',   ping:3,  uptime:'99.9%'},
+];
+
+const alerts = [
+  {level:'crit', msg:'srv-mail (192.168.1.12) — High latency: 42ms (threshold: 30ms)', time:'2 min ago'},
+  {level:'warn', msg:'wifi-ap-02 (192.168.1.71) — Latency spike: 88ms detected', time:'7 min ago'},
+  {level:'warn', msg:'printer-floor1 (192.168.1.40) — Host unreachable, 3 consecutive failures', time:'14 min ago'},
+  {level:'info', msg:'ip-cam-02 (192.168.1.51) — Device went offline', time:'22 min ago'},
+  {level:'info', msg:'workstation-05 (192.168.1.24) — New device joined network', time:'31 min ago'},
+  {level:'info', msg:'core-switch — Port 14 link state change: UP', time:'1 hr ago'},
+  {level:'info', msg:'Scheduled scan completed — 18 of 24 hosts responded', time:'2 hrs ago'},
+  {level:'info', msg:'nas-storage — Backup job completed successfully', time:'3 hrs ago'},
+];
+
+// ── LIVE CLOCK ─────────────────────────────────────────────────────────────
+function updateClock(){
+  document.getElementById('live-time').textContent =
+    new Date().toLocaleTimeString('en-GB',{hour12:false});
+}
+setInterval(updateClock, 1000); updateClock();
+
+// ── NAVIGATION ─────────────────────────────────────────────────────────────
+function showPage(id, el){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById('page-'+id).classList.add('active');
+  if(el) el.classList.add('active');
+  if(id==='topology') drawTopology();
+}
+
+// ── SCAN BUTTON ─────────────────────────────────────────────────────────────
+function runScan(){
+  const btn = document.getElementById('scan-btn');
+  btn.classList.add('scanning');
+  btn.textContent='⟳  SCANNING...';
+  setTimeout(()=>{
+    btn.classList.remove('scanning');
+    btn.textContent='⟳  SCAN NETWORK';
+  },3000);
+}
+
+// ── RENDER DEVICE TABLE (DASHBOARD) ──────────────────────────────────────
+function renderDashDevices(){
+  const tbody = document.getElementById('dash-device-list');
+  const sample = devices.slice(0,8);
+  tbody.innerHTML = sample.map(d=>`
+    <tr>
+      <td style="font-weight:600">${d.host}</td>
+      <td><span class="ip-text">${d.ip}</span></td>
+      <td><span class="status-badge ${d.status==='up'?'badge-up':d.status==='warn'?'badge-warn':'badge-down'}">
+        <div class="dot ${d.status==='up'?'dot-green':d.status==='warn'?'dot-yellow':'dot-red'}"></div>
+        ${d.status.toUpperCase()}
+      </span></td>
+      <td>${renderPing(d.ping)}</td>
+    </tr>`).join('');
+}
+function renderPing(p){
+  if(p===0) return `<span class="ping-val bad">—</span>`;
+  const cls = p<20?'good':p<50?'ok':'bad';
+  const pct = Math.min(p/100*100, 100);
+  const fillCls = p<20?'fill-green':p<50?'fill-orange':'fill-red';
+  return `<div class="ping-bar"><span class="ping-val ${cls}">${p}ms</span>
+    <div class="ping-mini"><div class="resource-fill ${fillCls}" style="width:${pct}%"></div></div></div>`;
+}
+
+// ── RENDER FULL DEVICE TABLE ──────────────────────────────────────────────
+function renderFullDevices(list){
+  list = list || devices;
+  const tbody = document.getElementById('full-device-list');
+  tbody.innerHTML = list.map((d,i)=>`
+    <tr>
+      <td style="color:var(--muted);font-family:'Share Tech Mono';font-size:11px">${String(i+1).padStart(2,'0')}</td>
+      <td style="font-weight:600">${d.host}</td>
+      <td><span class="ip-text">${d.ip}</span></td>
+      <td><span class="ip-text">${d.mac}</span></td>
+      <td style="color:var(--muted);font-size:12px">${d.type}</td>
+      <td><span class="status-badge ${d.status==='up'?'badge-up':d.status==='warn'?'badge-warn':'badge-down'}">
+        <div class="dot ${d.status==='up'?'dot-green':d.status==='warn'?'dot-yellow':'dot-red'}"></div>
+        ${d.status.toUpperCase()}
+      </span></td>
+      <td>${renderPing(d.ping)}</td>
+      <td style="font-family:'Share Tech Mono';font-size:12px;color:var(--accent2)">${d.uptime}</td>
+    </tr>`).join('');
+}
+function filterDevices(){
+  const q = document.getElementById('device-search').value.toLowerCase();
+  renderFullDevices(devices.filter(d=>d.host.includes(q)||d.ip.includes(q)));
+}
+
+// ── ALERTS ────────────────────────────────────────────────────────────────
+function renderAlerts(containerId, limit){
+  const list = limit ? alerts.slice(0,limit) : alerts;
+  document.getElementById(containerId).innerHTML = list.map(a=>`
+    <div class="alert-item">
+      <div class="alert-dot ${a.level}"></div>
+      <div><div class="alert-msg">${a.msg}</div><div class="alert-time">${a.time}</div></div>
+    </div>`).join('');
+}
+
+// ── CHART: Traffic (Dashboard) ───────────────────────────────────────────
+let trafficData = {labels:[], in:[], out:[]};
+for(let i=29;i>=0;i--){
+  const d=new Date(); d.setSeconds(d.getSeconds()-i);
+  trafficData.labels.push(d.toLocaleTimeString('en-GB',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}));
+  trafficData.in.push(+(Math.random()*40+20).toFixed(1));
+  trafficData.out.push(+(Math.random()*20+8).toFixed(1));
+}
+const ctxT = document.getElementById('trafficChart').getContext('2d');
+const trafficChart = new Chart(ctxT,{
+  type:'line',
+  data:{
+    labels:trafficData.labels,
+    datasets:[
+      {label:'Inbound',data:trafficData.in,borderColor:'#00d4ff',backgroundColor:'rgba(0,212,255,0.08)',tension:0.4,pointRadius:0,borderWidth:2,fill:true},
+      {label:'Outbound',data:trafficData.out,borderColor:'#00ff88',backgroundColor:'rgba(0,255,136,0.05)',tension:0.4,pointRadius:0,borderWidth:2,fill:true}
+    ]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    animation:{duration:300},
+    plugins:{legend:{display:true,position:'top',labels:{color:'#4a7090',font:{family:'Share Tech Mono',size:10},boxWidth:20}}},
+    scales:{
+      x:{ticks:{display:false},grid:{color:'rgba(26,58,92,0.3)',drawBorder:false}},
+      y:{ticks:{color:'#4a7090',font:{family:'Share Tech Mono',size:10}},grid:{color:'rgba(26,58,92,0.3)',drawBorder:false}}
+    }
+  }
+});
+
+// ── CHART: Status Donut ───────────────────────────────────────────────────
+const ctxS = document.getElementById('statusChart').getContext('2d');
+new Chart(ctxS,{
+  type:'doughnut',
+  data:{
+    labels:['Online','Warning','Offline'],
+    datasets:[{data:[21,2,1],backgroundColor:['rgba(0,255,136,0.7)','rgba(255,204,0,0.7)','rgba(255,51,85,0.7)'],borderWidth:0,hoverOffset:4}]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    cutout:'72%',
+    plugins:{legend:{position:'right',labels:{color:'#c8e0f4',font:{family:'Rajdhani',size:12},boxWidth:10,padding:10}}}
+  }
+});
+
+// ── CHART: Big Traffic ────────────────────────────────────────────────────
+let bigTrafficData = {labels:[], in:[], out:[]};
+for(let i=59;i>=0;i--){
+  const d=new Date(); d.setSeconds(d.getSeconds()-i);
+  bigTrafficData.labels.push(d.toLocaleTimeString('en-GB',{hour12:false}));
+  bigTrafficData.in.push(+(Math.random()*60+15).toFixed(1));
+  bigTrafficData.out.push(+(Math.random()*25+5).toFixed(1));
+}
+const ctxBT = document.getElementById('bigTrafficChart').getContext('2d');
+const bigChart = new Chart(ctxBT,{
+  type:'line',
+  data:{
+    labels:bigTrafficData.labels,
+    datasets:[
+      {label:'Inbound (Mbps)',data:bigTrafficData.in,borderColor:'#00d4ff',backgroundColor:'rgba(0,212,255,0.1)',tension:0.4,pointRadius:0,borderWidth:2,fill:true},
+      {label:'Outbound (Mbps)',data:bigTrafficData.out,borderColor:'#00ff88',backgroundColor:'rgba(0,255,136,0.06)',tension:0.4,pointRadius:0,borderWidth:2,fill:true}
+    ]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    animation:{duration:300},
+    plugins:{legend:{position:'top',labels:{color:'#4a7090',font:{family:'Share Tech Mono',size:10},boxWidth:14}}},
+    scales:{
+      x:{ticks:{color:'#2a5070',font:{family:'Share Tech Mono',size:9},maxTicksLimit:10},grid:{color:'rgba(26,58,92,0.2)'}},
+      y:{ticks:{color:'#4a7090',font:{family:'Share Tech Mono',size:10}},grid:{color:'rgba(26,58,92,0.3)'}}
+    }
+  }
+});
+
+// ── CHART: Protocol ───────────────────────────────────────────────────────
+const ctxP = document.getElementById('protoChart').getContext('2d');
+new Chart(ctxP,{
+  type:'bar',
+  data:{
+    labels:['TCP','UDP','HTTP','HTTPS','DNS','ICMP','Other'],
+    datasets:[{data:[42,18,12,28,8,4,6],backgroundColor:['#00d4ff','#00ff88','#ffcc00','#ff6b35','#8844ff','#ff3355','#4a7090'],borderRadius:4}]
+  },
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      x:{ticks:{color:'#4a7090',font:{family:'Share Tech Mono',size:10}},grid:{display:false}},
+      y:{ticks:{color:'#4a7090',font:{family:'Share Tech Mono',size:10}},grid:{color:'rgba(26,58,92,0.3)'}}
+    }
+  }
+});
+
+// ── CHART: Latency ────────────────────────────────────────────────────────
+const ctxL = document.getElementById('latencyChart').getContext('2d');
+const latDevices = devices.filter(d=>d.ping>0).slice(0,10);
+new Chart(ctxL,{
+  type:'bar',
+  data:{
+    labels:latDevices.map(d=>d.host.replace('workstation','ws').replace('gateway','gw')),
+    datasets:[{
+      data:latDevices.map(d=>d.ping),
+      backgroundColor:latDevices.map(d=>d.ping<20?'rgba(0,255,136,0.6)':d.ping<50?'rgba(255,204,0,0.6)':'rgba(255,51,85,0.6)'),
+      borderRadius:4
+    }]
+  },
+  options:{
+    indexAxis:'y',responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      x:{ticks:{color:'#4a7090',font:{family:'Share Tech Mono',size:10}},grid:{color:'rgba(26,58,92,0.3)'}},
+      y:{ticks:{color:'#c8e0f4',font:{family:'Rajdhani',size:11}},grid:{display:false}}
+    }
+  }
+});
+
+// ── CHART: Packet Loss ────────────────────────────────────────────────────
+const ctxPL = document.getElementById('packetLossChart').getContext('2d');
+const plLabels=[];
+const plData=[];
+for(let i=0;i<20;i++){
+  const d=new Date(); d.setMinutes(d.getMinutes()-20+i);
+  plLabels.push(d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false}));
+  plData.push(+(Math.random()*3).toFixed(2));
+}
+new Chart(ctxPL,{
+  type:'line',
+  data:{labels:plLabels,datasets:[{label:'Packet Loss %',data:plData,borderColor:'#ff6b35',backgroundColor:'rgba(255,107,53,0.08)',tension:0.4,pointRadius:2,borderWidth:2,fill:true}]},
+  options:{
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      x:{ticks:{color:'#2a5070',font:{family:'Share Tech Mono',size:9},maxTicksLimit:8},grid:{color:'rgba(26,58,92,0.2)'}},
+      y:{ticks:{color:'#4a7090',font:{family:'Share Tech Mono',size:10}},grid:{color:'rgba(26,58,92,0.3)'}}
+    }
+  }
+});
+
+// ── TOP TALKERS ───────────────────────────────────────────────────────────
+const talkers=[
+  {host:'srv-web-01',ip:'192.168.1.10',sent:124.2,recv:88.4},
+  {host:'srv-db-01',ip:'192.168.1.11',sent:88.1,recv:102.3},
+  {host:'nas-storage',ip:'192.168.1.60',sent:66.5,recv:44.1},
+  {host:'workstation-01',ip:'192.168.1.20',sent:22.4,recv:18.2},
+  {host:'workstation-02',ip:'192.168.1.21',sent:14.8,recv:12.1},
+];
+document.getElementById('top-talkers').innerHTML = talkers.map((t,i)=>`
+  <div style="margin-bottom:12px;">
+    <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;">
+      <span style="font-weight:600">${t.host}</span>
+      <span style="font-family:'Share Tech Mono';color:var(--accent)">${(t.sent+t.recv).toFixed(1)} MB</span>
+    </div>
+    <div class="resource-track"><div class="resource-fill ${['fill-blue','fill-green','fill-orange','fill-blue','fill-green'][i]}" style="width:${Math.min((t.sent+t.recv)/300*100,100)}%"></div></div>
+  </div>`).join('');
+
+// ── INTERFACES ─────────────────────────────────────────────────────────────
+const ifaces=[
+  {name:'eth0',speed:'1 Gbps',in:'42.3 Mbps',out:'18.1 Mbps',errors:'0',status:'UP'},
+  {name:'eth1',speed:'1 Gbps',in:'12.8 Mbps',out:'4.2 Mbps',errors:'0',status:'UP'},
+  {name:'wlan0',speed:'300 Mbps',in:'8.5 Mbps',out:'6.1 Mbps',errors:'2',status:'UP'},
+];
+document.getElementById('iface-cards').innerHTML = ifaces.map(f=>`
+  <div class="iface-card">
+    <div class="iface-name">${f.name}</div>
+    <div class="iface-stat">Speed: <b>${f.speed}</b></div>
+    <div class="iface-stat">↑ In: <b style="color:var(--accent)">${f.in}</b></div>
+    <div class="iface-stat">↓ Out: <b style="color:var(--accent2)">${f.out}</b></div>
+    <div class="iface-stat">Errors: <b style="color:${f.errors==='0'?'var(--accent2)':'var(--danger)'}">${f.errors}</b></div>
+    <div style="margin-top:8px;"><span class="status-badge badge-up"><div class="dot dot-green"></div>${f.status}</span></div>
+  </div>`).join('');
+
+// ── TOPOLOGY MAP ──────────────────────────────────────────────────────────
+const topoNodes = [
+  {id:'gw',  label:'gateway-01', ip:'192.168.1.1',  type:'router',  x:450,y:60,  status:'up'},
+  {id:'fw',  label:'firewall',   ip:'192.168.1.254',type:'router',  x:450,y:160, status:'up'},
+  {id:'sw',  label:'core-switch',ip:'192.168.1.2',  type:'switch',  x:450,y:260, status:'up'},
+  {id:'s1',  label:'srv-web-01', ip:'192.168.1.10', type:'server',  x:200,y:340, status:'up'},
+  {id:'s2',  label:'srv-db-01',  ip:'192.168.1.11', type:'server',  x:310,y:340, status:'up'},
+  {id:'s3',  label:'srv-mail',   ip:'192.168.1.12', type:'server',  x:420,y:340, status:'warn'},
+  {id:'nas', label:'nas-storage',ip:'192.168.1.60', type:'server',  x:530,y:340, status:'up'},
+  {id:'ap1', label:'wifi-ap-01', ip:'192.168.1.70', type:'ap',      x:640,y:340, status:'up'},
+  {id:'ap2', label:'wifi-ap-02', ip:'192.168.1.71', type:'ap',      x:750,y:340, status:'warn'},
+  {id:'p1',  label:'print-f1',   ip:'192.168.1.40', type:'device',  x:140,y:460, status:'down'},
+  {id:'w1',  label:'wkstn-01',   ip:'192.168.1.20', type:'device',  x:260,y:460, status:'up'},
+  {id:'w2',  label:'wkstn-02',   ip:'192.168.1.21', type:'device',  x:370,y:460, status:'up'},
+  {id:'cam1',label:'ip-cam-01',  ip:'192.168.1.50', type:'device',  x:480,y:460, status:'up'},
+  {id:'cam2',label:'ip-cam-02',  ip:'192.168.1.51', type:'device',  x:590,y:460, status:'down'},
+];
+const topoEdges=[
+  ['gw','fw'],['fw','sw'],
+  ['sw','s1'],['sw','s2'],['sw','s3'],['sw','nas'],['sw','ap1'],['sw','ap2'],
+  ['s1','p1'],['s1','w1'],['s2','w2'],['nas','cam1'],['ap1','cam2']
+];
+
+function drawTopology(){
+  const canvas=document.getElementById('topology-canvas');
+  const ctx=canvas.getContext('2d');
+  const W=canvas.width, H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  // background grid
+  ctx.strokeStyle='rgba(26,58,92,0.2)';
+  ctx.lineWidth=1;
+  for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+
+  // edges
+  topoEdges.forEach(([a,b])=>{
+    const nA=topoNodes.find(n=>n.id===a), nB=topoNodes.find(n=>n.id===b);
+    ctx.beginPath();
+    ctx.moveTo(nA.x,nA.y); ctx.lineTo(nB.x,nB.y);
+    ctx.strokeStyle='rgba(0,212,255,0.25)'; ctx.lineWidth=1.5;
+    ctx.stroke();
+  });
+
+  // nodes
+  topoNodes.forEach(n=>{
+    const color = n.status==='up'?'#00ff88':n.status==='warn'?'#ffcc00':'#ff3355';
+    const isRouter=(n.type==='router'||n.type==='switch');
+    const r = isRouter?14:10;
+
+    // glow
+    const grd=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,r*2.5);
+    grd.addColorStop(0,color.replace('#','rgba(').replace('00ff88','0,255,136,0.3)').replace('ffcc00','255,204,0,0.3)').replace('ff3355','255,51,85,0.3)'));
+    grd.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=grd;
+    ctx.beginPath(); ctx.arc(n.x,n.y,r*2.5,0,Math.PI*2); ctx.fill();
+
+    // ring
+    ctx.beginPath(); ctx.arc(n.x,n.y,r,0,Math.PI*2);
+    ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke();
+
+    // fill
+    ctx.beginPath(); ctx.arc(n.x,n.y,r-2,0,Math.PI*2);
+    ctx.fillStyle=isRouter?'rgba(0,212,255,0.2)':'rgba(0,20,40,0.8)';
+    ctx.fill();
+
+    // icon text
+    ctx.fillStyle=color; ctx.font=`${isRouter?12:9}px Share Tech Mono`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    const icon=n.type==='router'?'R':n.type==='switch'?'S':n.type==='server'?'SV':n.type==='ap'?'AP':'⬡';
+    ctx.fillText(icon,n.x,n.y);
+
+    // label
+    ctx.fillStyle='rgba(200,224,244,0.8)'; ctx.font='9px Rajdhani';
+    ctx.fillText(n.label,n.x,n.y+r+10);
+  });
+
+  // click handler
+  canvas.onclick=function(e){
+    const rect=canvas.getBoundingClientRect();
+    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    const scaleX=canvas.width/rect.width, scaleY=canvas.height/rect.height;
+    const cx=mx*scaleX, cy=my*scaleY;
+    topoNodes.forEach(n=>{
+      const dx=cx-n.x, dy=cy-n.y;
+      if(Math.sqrt(dx*dx+dy*dy)<16){
+        document.getElementById('topo-selected-title').textContent=n.label;
+        document.getElementById('topo-info').innerHTML=`
+          <div style="display:grid;gap:8px;">
+            <div>IP: <b style="color:var(--accent);font-family:'Share Tech Mono'">${n.ip}</b></div>
+            <div>Type: <b>${n.type.charAt(0).toUpperCase()+n.type.slice(1)}</b></div>
+            <div>Status: <span class="status-badge ${n.status==='up'?'badge-up':n.status==='warn'?'badge-warn':'badge-down'}">${n.status.toUpperCase()}</span></div>
+          </div>`;
+      }
+    });
+  };
+}
+
+// ── LIVE UPDATE ───────────────────────────────────────────────────────────
+function liveUpdate(){
+  // rolling traffic chart
+  const now = new Date().toLocaleTimeString('en-GB',{hour12:false});
+  trafficData.labels.push(now); trafficData.labels.shift();
+  const ni=+(Math.random()*40+20).toFixed(1);
+  const no=+(Math.random()*20+8).toFixed(1);
+  trafficData.in.push(ni); trafficData.in.shift();
+  trafficData.out.push(no); trafficData.out.shift();
+  trafficChart.update('none');
+
+  bigTrafficData.labels.push(now); bigTrafficData.labels.shift();
+  bigTrafficData.in.push(+(Math.random()*60+15).toFixed(1)); bigTrafficData.in.shift();
+  bigTrafficData.out.push(+(Math.random()*25+5).toFixed(1)); bigTrafficData.out.shift();
+  bigChart.update('none');
+
+  document.getElementById('bw-in').textContent=ni.toFixed(1);
+  document.getElementById('bw-out').textContent=no.toFixed(1);
+
+  // random KPI jitter
+  const load=Math.round(55+Math.random()*20);
+  const bw=Math.round(38+Math.random()*16);
+  document.getElementById('net-load').textContent=load+'%';
+  document.getElementById('net-load-bar').style.width=load+'%';
+  document.getElementById('bw-pct').textContent=bw+'%';
+  document.getElementById('bw-bar').style.width=bw+'%';
+  const avgLat=Math.round(15+Math.random()*8);
+  document.getElementById('kpi-latency').textContent=avgLat+'ms';
+}
+setInterval(liveUpdate,2000);
+
+// ── INIT ──────────────────────────────────────────────────────────────────
+renderDashDevices();
+renderFullDevices();
+renderAlerts('dash-alerts',4);
+renderAlerts('all-alerts-list');
+</script>
+</body>
+</html>
