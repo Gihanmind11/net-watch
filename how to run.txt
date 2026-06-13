@@ -3,7 +3,12 @@ To get started, install Python and run:
   cd backend
   pip install -r requirements.txt
   python app.py
-
+cd
   # Terminal 2 — Frontend
   cd frontend
-  npm start
+  npm start or npm run dev
+
+  # for errors checking
+  
+  npm run lint
+  npm run build

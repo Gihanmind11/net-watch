@@ -63,7 +63,7 @@ export default function AboutPage() {
           <div className="grid grid-cols-[repeat(auto-fit,minmax(250px,1fr))] gap-3">
             {[
               { num: '01', text: 'Detect all devices connected to the LAN using ARP scanning' },
-              { num: '02', text: 'Display IP address, MAC address, and hostname per device' },
+              { num: '02', text: 'Display IP address, MAC address, and device name per device' },
               { num: '03', text: 'Identify and report device status (online / offline)' },
               { num: '04', text: 'Monitor basic bandwidth usage per interface' },
               { num: '05', text: 'Detect new/unauthorized devices and generate alerts' },

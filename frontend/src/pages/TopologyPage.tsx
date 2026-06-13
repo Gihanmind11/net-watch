@@ -1,17 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { TopologyData, TopologyNode, PduStep } from '../types'
+import type { TopologyData, TopologyNode } from '../types'
 
 const API = 'http://localhost:5000/api'
 
 export default function TopologyPage() {
   const [topoData, setTopoData] = useState<TopologyData>({ nodes: [], edges: [] })
-  const [pduSteps, setPduSteps] = useState<PduStep[]>([])
   const [selected, setSelected] = useState<TopologyNode | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
+  const headers = { 'Authorization': `Bearer ${localStorage.getItem('nw_token') || ''}` }
+
   useEffect(() => {
-    fetch(`${API}/topology`).then(r => r.json()).then(setTopoData).catch(() => {})
-    fetch(`${API}/pdu-simulation`).then(r => r.json()).then(d => setPduSteps(d.steps || [])).catch(() => {})
+    fetch(`${API}/topology`, { headers }).then(r => r.json()).then(setTopoData).catch(() => {})
   }, [])
 
   const drawTopology = useCallback(() => {
@@ -123,24 +123,6 @@ export default function TopologyPage() {
               </div>
             ) : 'Click on any device node to view details.'}
           </div>
-        </div>
-      </div>
-
-      <div className="bg-panel border border-border-noc rounded-[10px] overflow-hidden mt-4">
-        <div className="flex items-center justify-between px-[18px] py-3.5 border-b border-border-noc bg-panel2">
-          <div className="font-display font-bold text-sm tracking-[1px] text-accent">PDU Simulation Log</div>
-          <div className="text-[11px] text-muted font-mono-noc">CISCO PACKET TRACER</div>
-        </div>
-        <div className="p-4">
-          {pduSteps.map(step => (
-            <div key={step.step} className="flex items-start gap-3 py-2 border-b border-border-noc/30 last:border-b-0 text-xs">
-              <div className="font-mono-noc font-bold text-accent min-w-[20px]">{step.step}</div>
-              <div>
-                <div className="font-semibold">{step.action}</div>
-                <div className="text-muted mt-0.5">{step.detail}</div>
-              </div>
-            </div>
-          ))}
         </div>
       </div>
     </>

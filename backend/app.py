@@ -10,17 +10,151 @@ from flask_cors import CORS
 import database as db
 import monitor
 import scanner
+from auth import (
+    generate_access_token,
+    generate_refresh_token,
+    require_auth
+)
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, supports_credentials=True)
 
 # Initialize database
 db.init_db()
 
 
-# ── API Routes ───────────────────────────────────────────────────────────────
+# ─── Rate Limiting Configuration ─────────────────────────────────────────────────
+MAX_FAILED_ATTEMPTS = 5
+RATE_LIMIT_WINDOW_MINUTES = 15
 
+
+# ─── Auth Routes ────────────────────────────────────────────────────────────────
+@app.route("/api/login", methods=["POST"])
+def login():
+    """Full login flow: validation → rate limit → log attempt → tokens → permissions."""
+    # 1. Backend Validation (username/password present)
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing request body"}), 400
+
+    username = data.get("username", "")
+    password = data.get("password", "")
+    client_ip = request.remote_addr or "unknown"
+
+    if not username or not password:
+        db.log_login_attempt(username, client_ip, False)
+        return jsonify({"error": "Username and password are required"}), 400
+
+    # 2. Rate Limiting Check
+    failed_attempts = db.get_recent_failed_attempts(
+        client_ip, window_minutes=RATE_LIMIT_WINDOW_MINUTES
+    )
+    if failed_attempts >= MAX_FAILED_ATTEMPTS:
+        db.log_login_attempt(username, client_ip, False)
+        return jsonify({
+            "error": "Too many failed login attempts. Please try again later.",
+            "retry_after": RATE_LIMIT_WINDOW_MINUTES
+        }), 429
+
+    # 3. Check user exists and verify password
+    user = db.verify_user(username, password)
+
+    # 4. Log login attempt
+    success = user is not None
+    db.log_login_attempt(username, client_ip, success)
+
+    if not user:
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    # 5. Check account active status
+    if not user["active"]:
+        return jsonify({"error": "Account is disabled"}), 403
+
+    # 6. Update last login
+    db.update_last_login(username)
+
+    # 7. Generate tokens
+    access_token = generate_access_token(
+        username, user_id=user["id"], expires_in_minutes=60
+    )
+    refresh_token = generate_refresh_token()
+
+    # 8. Store refresh token
+    db.store_refresh_token(user_id=user["id"], token=refresh_token)
+
+    # 9. Load user permissions
+    permissions = db.get_user_permissions(user_id=user["id"])
+
+    return jsonify({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "permissions": permissions
+        }
+    }), 200
+
+
+@app.route("/api/refresh", methods=["POST"])
+def refresh():
+    """Refresh access token using valid refresh token."""
+    data = request.get_json()
+    refresh_token = data.get("refresh_token") if data else None
+
+    if not refresh_token:
+        return jsonify({"error": "Refresh token is required"}), 400
+
+    # Verify refresh token in DB
+    stored_token = db.get_refresh_token(refresh_token)
+    if not stored_token:
+        return jsonify({"error": "Invalid or expired refresh token"}), 401
+
+    # Get user details
+    user = db.get_user_by_id(stored_token["user_id"])
+    if not user or not user["active"]:
+        return jsonify({"error": "Invalid user or account disabled"}), 403
+
+    # Revoke old refresh token for security (single-use)
+    db.revoke_refresh_token(refresh_token)
+
+    # Generate new token pair
+    new_access = generate_access_token(user["username"], user["id"])
+    new_refresh = generate_refresh_token()
+    db.store_refresh_token(user["id"], new_refresh)
+
+    # Load user permissions
+    permissions = db.get_user_permissions(user["id"])
+
+    return jsonify({
+        "access_token": new_access,
+        "refresh_token": new_refresh,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "permissions": permissions
+        }
+    }), 200
+
+
+@app.route("/api/logout", methods=["POST"])
+@require_auth
+def logout():
+    """Logout user by revoking refresh token."""
+    data = request.get_json()
+    refresh_token = data.get("refresh_token") if data else None
+
+    if refresh_token:
+        db.revoke_refresh_token(refresh_token)
+
+    return jsonify({"status": "success"}), 200
+
+
+# ─── Protected API Routes (require authentication) ───────────────────────────────
 @app.route("/api/devices", methods=["GET"])
+@require_auth
 def get_devices():
     """Return all discovered devices."""
     devices = db.get_devices()
@@ -28,7 +162,7 @@ def get_devices():
     for d in devices:
         result.append({
             "id": d["id"],
-            "hostname": d["hostname"] or d["ip_address"],
+            "device_name": d["device_name"] or d["ip_address"],
             "ip": d["ip_address"],
             "mac": d["mac_address"] or "N/A",
             "type": d["device_type"] or "Unknown",
@@ -36,13 +170,30 @@ def get_devices():
             "status": d["status"],
             "ping_ms": d["ping_ms"] or 0,
             "uptime_pct": d["uptime_pct"] or 100.0,
+            "open_ports": d["open_ports"] or "",
             "last_seen": d["last_seen"],
             "first_seen": d["first_seen"],
         })
     return jsonify({"count": len(result), "devices": result})
 
 
+@app.route("/api/devices/reset", methods=["POST"])
+@require_auth
+def reset_devices():
+    """Delete all devices and related data."""
+    conn = db.get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM ping_history")
+    cur.execute("DELETE FROM alerts")
+    cur.execute("DELETE FROM devices")
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok", "deleted": deleted})
+
+
 @app.route("/api/devices/<ip>", methods=["GET"])
+@require_auth
 def get_device(ip):
     """Return single device details."""
     d = db.get_device_by_ip(ip)
@@ -50,7 +201,7 @@ def get_device(ip):
         return jsonify({"error": "Device not found"}), 404
     return jsonify({
         "id": d["id"],
-        "hostname": d["hostname"] or d["ip_address"],
+        "device_name": d["device_name"] or d["ip_address"],
         "ip": d["ip_address"],
         "mac": d["mac_address"] or "N/A",
         "type": d["device_type"] or "Unknown",
@@ -58,241 +209,109 @@ def get_device(ip):
         "status": d["status"],
         "ping_ms": d["ping_ms"] or 0,
         "uptime_pct": d["uptime_pct"] or 100.0,
+        "open_ports": d["open_ports"] or "",
         "last_seen": d["last_seen"],
         "first_seen": d["first_seen"],
     })
 
 
 @app.route("/api/scan", methods=["POST"])
-def trigger_scan():
-    """Trigger a manual ARP scan."""
-    network = request.json.get("network") if request.is_json else None
-    result = monitor.run_scan(network)
+@require_auth
+def scan_network():
+    """Trigger network scan and return results."""
+    result = monitor.run_scan()
     return jsonify(result)
 
 
 @app.route("/api/alerts", methods=["GET"])
+@require_auth
 def get_alerts():
-    """Return all active alerts with counts."""
+    """Return all alerts."""
     alerts = db.get_alerts()
-    counts = db.get_alert_counts()
-    result = []
-    for a in alerts:
-        result.append({
-            "id": a["id"],
-            "level": a["level"],
-            "message": a["message"],
-            "device_ip": a["device_ip"],
-            "created_at": a["created_at"],
-        })
-    return jsonify({
-        "total": counts["total"],
-        "critical": counts["critical"],
-        "warning": counts["warning"],
-        "new_devices": counts["new_devices"],
-        "info": counts["info"],
-        "alerts": result,
-    })
+    return jsonify({"count": len(alerts), "alerts": alerts})
 
 
-@app.route("/api/bandwidth", methods=["GET"])
-def get_bandwidth():
-    """Return current bandwidth stats and recent history."""
-    current = monitor.get_bandwidth()
-    history = db.get_bandwidth_history(minutes=5)
-    return jsonify({
-        "current": current,
-        "history": history,
-    })
+@app.route("/api/alerts/<int:alert_id>/resolve", methods=["POST"])
+@require_auth
+def resolve_alert(alert_id):
+    """Mark alert as resolved."""
+    success = db.resolve_alert(alert_id)
+    if success:
+        return jsonify({"status": "ok"})
+    else:
+        return jsonify({"error": "Alert not found"}), 404
 
 
 @app.route("/api/topology", methods=["GET"])
+@require_auth
 def get_topology():
-    """Return topology nodes and edges for visualization."""
+    """Return network topology data."""
     devices = db.get_devices()
-
-    # Build topology from discovered devices
     nodes = []
-    edges = []
-
-    # Core infrastructure nodes (always present)
-    core_nodes = {
-        "gw": {"id": "gw", "label": "gateway-01", "ip": "192.168.1.1", "type": "router", "x": 450, "y": 60},
-        "fw": {"id": "fw", "label": "firewall", "ip": "192.168.1.254", "type": "firewall", "x": 450, "y": 150},
-        "sw": {"id": "sw", "label": "core-switch", "ip": "192.168.1.2", "type": "switch", "x": 450, "y": 240},
-    }
-
-    # Map discovered devices to topology positions
-    device_map = {}
-    for d in devices:
-        device_map[d["ip_address"]] = d
-
-    # Update core nodes with live status
-    for key, node in core_nodes.items():
-        dev = device_map.get(node["ip"])
-        node["status"] = dev["status"] if dev else "unknown"
-        nodes.append(node)
-
-    # Define positions for known devices
-    positions = {
-        "192.168.1.10": {"x": 150, "y": 340, "parent": "sw"},
-        "192.168.1.11": {"x": 270, "y": 340, "parent": "sw"},
-        "192.168.1.12": {"x": 390, "y": 340, "parent": "sw"},
-        "192.168.1.60": {"x": 510, "y": 340, "parent": "sw"},
-        "192.168.1.70": {"x": 630, "y": 340, "parent": "sw"},
-        "192.168.1.71": {"x": 750, "y": 340, "parent": "sw"},
-        "192.168.1.40": {"x": 100, "y": 450, "parent": "192.168.1.10"},
-        "192.168.1.20": {"x": 220, "y": 450, "parent": "192.168.1.10"},
-        "192.168.1.21": {"x": 340, "y": 450, "parent": "192.168.1.11"},
-        "192.168.1.22": {"x": 460, "y": 450, "parent": "192.168.1.11"},
-        "192.168.1.30": {"x": 580, "y": 450, "parent": "192.168.1.70"},
-        "192.168.1.50": {"x": 700, "y": 450, "parent": "192.168.1.60"},
-        "192.168.1.51": {"x": 800, "y": 450, "parent": "192.168.1.60"},
-    }
-
-    # Add discovered devices as topology nodes
-    for d in devices:
-        ip = d["ip_address"]
-        if ip in [n["ip"] for n in nodes]:
-            continue
-
-        pos = positions.get(ip)
-        if pos:
-            node_id = ip.replace(".", "_")
-            node = {
-                "id": node_id,
-                "label": d["hostname"] or ip,
-                "ip": ip,
-                "type": _map_device_type(d["device_type"]),
-                "x": pos["x"],
-                "y": pos["y"],
-                "status": d["status"],
-            }
-            nodes.append(node)
-
-            # Add edge to parent
-            parent_ip = pos["parent"]
-            parent_node = None
-            for n in nodes:
-                if n["ip"] == parent_ip:
-                    parent_node = n
-                    break
-            if parent_node:
-                edges.append([parent_node["id"], node_id])
-
-    # Default edges for core infrastructure
-    core_edges = [["gw", "fw"], ["fw", "sw"]]
-    for src, dst in core_edges:
-        if [src, dst] not in edges:
-            edges.append([src, dst])
-
-    return jsonify({"nodes": nodes, "edges": edges})
+    links = []
+    try:
+        from scapy.arch import get_if_addr
+        try:
+            gateway_ip = ".".join(get_if_addr(scanner.get_default_interface()).split(".")[:3]) + ".1"
+        except:
+            gateway_ip = None
+        if gateway_ip:
+            nodes.append({
+                "id": "gateway",
+                "label": "Gateway",
+                "ip": gateway_ip,
+                "type": "router",
+                "x": 400,
+                "y": 200,
+                "status": "up"
+            })
+    except Exception:
+        pass
+    for i, d in enumerate(devices):
+        nodes.append({
+            "id": str(d["id"]),
+            "label": d["device_name"] or d["ip_address"],
+            "ip": d["ip_address"],
+            "type": "switch" if d["device_type"] == "Switch" else "server" if d["device_type"] == "Server" else "workstation",
+            "x": 200 + (i % 3) * 200,
+            "y": 350 + (i // 3) * 100,
+            "status": d["status"]
+        })
+        if len(nodes) > 1:
+            links.append({"source": "gateway" if nodes[0]["id"] == "gateway" else "0", "target": str(d["id"])})
+    return jsonify({"nodes": nodes, "links": links})
 
 
-def _map_device_type(dtype):
-    """Map device_type string to topology type."""
-    dtype = (dtype or "").lower()
-    if "router" in dtype:
-        return "router"
-    if "switch" in dtype:
-        return "switch"
-    if "server" in dtype or "nas" in dtype:
-        return "server"
-    if "firewall" in dtype:
-        return "firewall"
-    if "ap" in dtype or "wifi" in dtype:
-        return "ap"
-    return "device"
+@app.route("/api/traffic", methods=["GET"])
+@require_auth
+def get_traffic():
+    """Return bandwidth traffic data."""
+    traffic = monitor.get_bandwidth()
+    return jsonify(traffic)
 
 
-@app.route("/api/stats", methods=["GET"])
-def get_stats():
-    """Return KPI summary statistics."""
+@app.route("/api/performance", methods=["GET"])
+@require_auth
+def get_performance():
+    """Return performance statistics."""
     stats = db.get_stats()
     return jsonify(stats)
 
 
-@app.route("/api/interfaces", methods=["GET"])
-def get_interfaces():
-    """Return interface card data."""
-    ifaces = monitor.get_interfaces()
-    return jsonify({"interfaces": ifaces})
+# ─── Background Monitoring Thread ────────────────────────────────────────────────
+def background_monitor():
+    """Continuously monitor network devices and update their status."""
+    while True:
+        try:
+            monitor.monitor_all_devices()
+        except Exception as e:
+            print(f"Monitoring error: {e}")
+        time.sleep(10)
 
 
-@app.route("/api/protocols", methods=["GET"])
-def get_protocols():
-    """Return protocol distribution (simulated for educational purposes)."""
-    # Protocol distribution is simulated since deep packet inspection is out of scope
-    protocols = [
-        {"protocol": "TCP", "percentage": 42, "color": "#00d4ff"},
-        {"protocol": "UDP", "percentage": 18, "color": "#00ff88"},
-        {"protocol": "HTTP", "percentage": 12, "color": "#ffcc00"},
-        {"protocol": "HTTPS", "percentage": 28, "color": "#ff6b35"},
-        {"protocol": "DNS", "percentage": 8, "color": "#8844ff"},
-        {"protocol": "ICMP", "percentage": 4, "color": "#ff3355"},
-        {"protocol": "Other", "percentage": 6, "color": "#4a7090"},
-    ]
-    return jsonify({"protocols": protocols})
-
-
-@app.route("/api/top-talkers", methods=["GET"])
-def get_top_talkers():
-    """Return top bandwidth-consuming devices."""
-    devices = db.get_devices()
-    talkers = []
-    for d in devices[:5]:
-        if d["status"] == "up":
-            talkers.append({
-                "hostname": d["hostname"] or d["ip_address"],
-                "ip": d["ip_address"],
-                "sent_mb": round(10 + hash(d["ip_address"]) % 200, 1),
-                "recv_mb": round(5 + hash(d["ip_address"]) % 150, 1),
-            })
-    talkers.sort(key=lambda t: t["sent_mb"] + t["recv_mb"], reverse=True)
-    return jsonify({"talkers": talkers[:5]})
-
-
-@app.route("/api/pdu-simulation", methods=["GET"])
-def get_pdu_simulation():
-    """Return PDU simulation steps for educational purposes."""
-    steps = [
-        {"step": 1, "action": "PC-0 sends ARP Request", "detail": "Broadcast to ff:ff:ff:ff:ff:ff", "from": "192.168.1.20", "to": "broadcast"},
-        {"step": 2, "action": "Switch-0 floods frame", "detail": "Frame forwarded to all ports", "from": "switch", "to": "all"},
-        {"step": 3, "action": "Server-Web replies", "detail": "ARP Reply with MAC address", "from": "192.168.1.10", "to": "192.168.1.20"},
-        {"step": 4, "action": "PC-0 records MAC", "detail": "ARP table updated, begins TCP handshake", "from": "192.168.1.20", "to": "192.168.1.10"},
-        {"step": 5, "action": "SYN → port 80", "detail": "TCP SYN packet sent to web server", "from": "192.168.1.20", "to": "192.168.1.10"},
-        {"step": 6, "action": "SYN-ACK ←", "detail": "Server responds with SYN-ACK", "from": "192.168.1.10", "to": "192.168.1.20"},
-        {"step": 7, "action": "ACK →", "detail": "Connection established", "from": "192.168.1.20", "to": "192.168.1.10"},
-        {"step": 8, "action": "HTTP GET /index.html", "detail": "Web page request sent", "from": "192.168.1.20", "to": "192.168.1.10"},
-        {"step": 9, "action": "HTTP 200 OK", "detail": "Web page content received", "from": "192.168.1.10", "to": "192.168.1.20"},
-    ]
-    return jsonify({"steps": steps})
-
-
-# ── Startup ──────────────────────────────────────────────────────────────────
-
-def _initial_scan():
-    """Run initial scan after a short delay."""
-    time.sleep(1)
-    print("[startup] Running initial network scan...")
-    try:
-        monitor.run_scan()
-        monitor.log_bandwidth()
-        print("[startup] Initial scan complete.")
-    except Exception as e:
-        print(f"[startup] Initial scan error: {e}")
+monitor_thread = threading.Thread(target=background_monitor, daemon=True)
+monitor_thread.start()
 
 
 if __name__ == "__main__":
-    # Start background scanner
-    monitor.start_scheduler(interval_sec=30)
-
-    # Run initial scan in background
-    threading.Thread(target=_initial_scan, daemon=True).start()
-
-    print("=" * 50)
-    print("  NetWatch API Server")
-    print("  http://localhost:5000")
-    print("=" * 50)
-
     app.run(host="0.0.0.0", port=5000, debug=False)

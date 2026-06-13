@@ -10,46 +10,61 @@ const API = 'http://localhost:5000/api'
 
 interface TrafficPoint { time: string; in: number; out: number }
 
-export default function DashboardPage() {
+export default function DashboardPage({ scanVersion, token }: { scanVersion?: number; token?: string }) {
   const [stats, setStats] = useState<Stats>({ total_devices: 0, online: 0, offline: 0, avg_latency: 0, new_devices: 0, warning: 0 })
   const [devices, setDevices] = useState<Device[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [trafficData, setTrafficData] = useState<TrafficPoint[]>([])
-  const [netLoad, setNetLoad] = useState(62)
-  const [bwPct, setBwPct] = useState(44)
+  const [netLoad, setNetLoad] = useState(0)
+  const [bwPct, setBwPct] = useState(0)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  useEffect(() => {
-    const initial: TrafficPoint[] = []
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(); d.setSeconds(d.getSeconds() - i)
-      initial.push({ time: d.toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }), in: +(Math.random() * 40 + 20).toFixed(1), out: +(Math.random() * 20 + 8).toFixed(1) })
-    }
-    setTrafficData(initial)
-  }, [])
+  const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
 
   useEffect(() => {
     const fetchAll = () => {
-      fetch(`${API}/stats`).then(r => r.json()).then(setStats).catch(() => {})
-      fetch(`${API}/devices`).then(r => r.json()).then(d => setDevices(d.devices || [])).catch(() => {})
-      fetch(`${API}/alerts`).then(r => r.json()).then(d => setAlerts((d.alerts || []).slice(0, 4))).catch(() => {})
+      fetch(`${API}/stats`, { headers }).then(r => r.json()).then(setStats).catch(() => {})
+      fetch(`${API}/devices`, { headers }).then(r => r.json()).then(d => setDevices(d.devices || [])).catch(() => {})
+      fetch(`${API}/alerts`, { headers }).then(r => r.json()).then(d => setAlerts((d.alerts || []).slice(0, 4))).catch(() => {})
     }
     fetchAll()
     const id = setInterval(fetchAll, 5000)
     return () => clearInterval(id)
-  }, [])
+  }, [token])
 
   useEffect(() => {
-    intervalRef.current = setInterval(() => {
-      const now = new Date().toLocaleTimeString('en-GB', { hour12: false })
-      setTrafficData(prev => {
-        const next = [...prev, { time: now, in: +(Math.random() * 40 + 20).toFixed(1), out: +(Math.random() * 20 + 8).toFixed(1) }]
-        if (next.length > 30) next.shift()
-        return next
-      })
-      setNetLoad(Math.round(55 + Math.random() * 20))
-      setBwPct(Math.round(38 + Math.random() * 16))
-    }, 2000)
+    if (scanVersion && scanVersion > 0) {
+      fetch(`${API}/stats`, { headers }).then(r => r.json()).then(setStats).catch(() => {})
+      fetch(`${API}/devices`, { headers }).then(r => r.json()).then(d => setDevices(d.devices || [])).catch(() => {})
+      fetch(`${API}/alerts`, { headers }).then(r => r.json()).then(d => setAlerts((d.alerts || []).slice(0, 4))).catch(() => {})
+    }
+  }, [scanVersion])
+
+  useEffect(() => {
+    const fetchBandwidth = () => {
+      fetch(`${API}/bandwidth`, { headers })
+        .then(r => r.json())
+        .then(data => {
+          const current = data.current || {}
+          let totalIn = 0
+          let totalOut = 0
+          for (const iface of Object.values(current) as Array<{ mbps_in?: number; mbps_out?: number }>) {
+            totalIn += iface.mbps_in || 0
+            totalOut += iface.mbps_out || 0
+          }
+          const now = new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          setTrafficData(prev => {
+            const next = [...prev, { time: now, in: +totalIn.toFixed(1), out: +totalOut.toFixed(1) }]
+            if (next.length > 30) next.shift()
+            return next
+          })
+          setNetLoad(Math.round(Math.min(totalIn + totalOut, 100)))
+          setBwPct(Math.round(Math.min(totalIn, 100)))
+        })
+        .catch(() => {})
+    }
+    fetchBandwidth()
+    intervalRef.current = setInterval(fetchBandwidth, 2000)
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [])
 
@@ -133,7 +148,7 @@ export default function DashboardPage() {
             <table className="w-full border-collapse">
               <thead>
                 <tr>
-                  {['HOSTNAME', 'IP ADDRESS', 'STATUS', 'LATENCY'].map(h => (
+                  {['DEVICE NAME', 'IP ADDRESS', 'STATUS', 'LATENCY'].map(h => (
                     <th key={h} className="text-[10px] tracking-[2px] text-muted text-left px-3 py-2 border-b border-border-noc font-mono-noc">{h}</th>
                   ))}
                 </tr>
@@ -141,7 +156,7 @@ export default function DashboardPage() {
               <tbody>
                 {devices.slice(0, 8).map(d => (
                   <tr key={d.ip} className="hover:bg-accent/[0.03]">
-                    <td className="px-3 py-2.5 border-b border-border-noc/40 text-[13px] font-semibold">{d.hostname}</td>
+                    <td className="px-3 py-2.5 border-b border-border-noc/40 text-[13px] font-semibold">{d.device_name}</td>
                     <td className="px-3 py-2.5 border-b border-border-noc/40 font-mono-noc text-xs text-muted">{d.ip}</td>
                     <td className="px-3 py-2.5 border-b border-border-noc/40"><StatusBadge status={d.status} /></td>
                     <td className="px-3 py-2.5 border-b border-border-noc/40"><PingBar ping={d.ping_ms} /></td>

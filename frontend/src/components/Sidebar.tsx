@@ -15,9 +15,10 @@ interface SidebarProps {
   onNavigate: (page: PageId) => void
   onScan: () => void
   alertCount: number
+  scanning: boolean
 }
 
-export default function Sidebar({ activePage, onNavigate, onScan, alertCount }: SidebarProps) {
+export default function Sidebar({ activePage, onNavigate, onScan, alertCount, scanning }: SidebarProps) {
   const sections = navItems.reduce<Record<string, typeof navItems>>((acc, item) => {
     if (!acc[item.section]) acc[item.section] = []
     acc[item.section].push(item)
@@ -50,9 +51,17 @@ export default function Sidebar({ activePage, onNavigate, onScan, alertCount }: 
       <div className="mt-auto px-5 pt-4 border-t border-border-noc">
         <button
           onClick={onScan}
-          className="w-full py-2.5 bg-gradient-to-br from-accent to-[#0088aa] border-none rounded-md text-black font-display font-bold text-[13px] tracking-[1px] cursor-pointer transition-all hover:shadow-[0_0_20px_rgba(0,212,255,0.3)] hover:-translate-y-px uppercase"
+          disabled={scanning}
+          className={`w-full py-2.5 bg-gradient-to-br from-accent to-[#0088aa] border-none rounded-md text-black font-display font-bold text-[13px] tracking-[1px] cursor-pointer transition-all hover:shadow-[0_0_20px_rgba(0,212,255,0.3)] hover:-translate-y-px uppercase ${scanning ? 'opacity-70 cursor-not-allowed' : ''}`}
         >
-          &#10227; &nbsp;SCAN NETWORK
+          {scanning ? (
+            <span className="flex items-center justify-center gap-2">
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+              SCANNING...
+            </span>
+          ) : (
+            <>&#10227; &nbsp;SCAN NETWORK</>
+          )}
         </button>
       </div>
     </nav>
