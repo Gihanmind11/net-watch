@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Alert } from '../types'
+import { clearAlerts, getAlerts, resolveAlert } from '../api'
 import AlertItem from '../components/AlertItem'
-
-const API = 'http://localhost:5000/api'
 
 type Filter = 'all' | 'crit' | 'warn' | 'info'
 
@@ -15,12 +14,8 @@ export default function AlertsPage() {
   const prevCriticalRef = useRef(0)
   const prevTotalRef = useRef(0)
 
-  const token = localStorage.getItem('nw_token') || ''
-  const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-
   const fetchAlerts = useCallback(() => {
-    fetch(`${API}/alerts`, { headers })
-      .then(r => r.json())
+    getAlerts()
       .then(d => {
         const newAlerts: Alert[] = d.alerts || []
         const newCounts = {
@@ -60,20 +55,20 @@ export default function AlertsPage() {
 
   const handleDismiss = async (alertId: number) => {
     try {
-      await fetch(`${API}/alerts/${alertId}/resolve`, { method: 'POST', headers })
+      await resolveAlert(alertId)
       setAlerts(prev => prev.filter(a => a.id !== alertId))
       setCounts(prev => ({ ...prev, total: Math.max(0, prev.total - 1) }))
-    } catch {}
+    } catch { /* ignore */ }
   }
 
   const handleClearAll = async () => {
     if (!confirm('Dismiss all alerts?')) return
     setClearing(true)
     try {
-      await fetch(`${API}/alerts/clear`, { method: 'POST', headers })
+      await clearAlerts()
       setAlerts([])
       setCounts({ total: 0, critical: 0, warning: 0, info: 0, new_devices: 0 })
-    } catch {}
+    } catch { /* ignore */ }
     setClearing(false)
   }
 

@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import type { Device, NetworkInterface } from '../types'
+import { getDevices, getInterfaces } from '../api'
 import StatusBadge from '../components/StatusBadge'
-
-const API = 'http://localhost:5000/api'
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes === 0) return '0 B'
@@ -16,11 +15,9 @@ export default function PerformancePage() {
   const [interfaces, setInterfaces] = useState<NetworkInterface[]>([])
   const [devices, setDevices] = useState<Device[]>([])
 
-  const headers = { 'Authorization': `Bearer ${localStorage.getItem('nw_token') || ''}` }
-
   useEffect(() => {
-    fetch(`${API}/interfaces`, { headers }).then(r => r.json()).then(d => setInterfaces(d.interfaces || [])).catch(() => {})
-    fetch(`${API}/devices`, { headers }).then(r => r.json()).then(d => setDevices(d.devices || [])).catch(() => {})
+    getInterfaces().then(d => setInterfaces(d.interfaces || [])).catch(() => {})
+    getDevices().then(d => setDevices(d.devices || [])).catch(() => {})
   }, [])
 
   const latencyData = devices.filter(d => d.ping_ms > 0).slice(0, 10).map(d => ({

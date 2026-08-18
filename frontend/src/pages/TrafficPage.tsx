@@ -1,24 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-
-const API = 'http://localhost:5000/api'
+import { getBandwidth } from '../api'
+import type { BandwidthInterface } from '../api'
 
 interface TrafficPoint { time: string; in: number; out: number }
-interface InterfaceData {
-  interface: string
-  mbps_in: number
-  mbps_out: number
-  speed_mbps: number
-  utilization: number
-  total_in: number
-  total_out: number
-  packets_in: number
-  packets_out: number
-  errors_in: number
-  errors_out: number
-  drops_in: number
-  drops_out: number
-}
 interface HistoryPoint { recorded_at: string; bytes_in: number; bytes_out: number }
 
 type TimeRange = '5m' | '15m' | '1h' | '6h'
@@ -32,23 +17,20 @@ const TIME_RANGES: Record<TimeRange, { label: string; minutes: number }> = {
 
 export default function TrafficPage() {
   const [trafficData, setTrafficData] = useState<TrafficPoint[]>([])
-  const [interfaces, setInterfaces] = useState<InterfaceData[]>([])
+  const [interfaces, setInterfaces] = useState<BandwidthInterface[]>([])
   const [bwIn, setBwIn] = useState('--')
   const [bwOut, setBwOut] = useState('--')
   const [timeRange, setTimeRange] = useState<TimeRange>('5m')
   const [historyData, setHistoryData] = useState<TrafficPoint[]>([])
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const headers = { 'Authorization': `Bearer ${localStorage.getItem('nw_token') || ''}` }
-
   // Fetch live bandwidth data
   useEffect(() => {
     const fetchBandwidth = () => {
-      fetch(`${API}/bandwidth`, { headers })
-        .then(r => r.json())
+      getBandwidth()
         .then(data => {
           const current = data.current || {}
-          const ifaces = Object.values(current) as InterfaceData[]
+          const ifaces = Object.values(current) as BandwidthInterface[]
           setInterfaces(ifaces)
 
           let totalIn = 0
@@ -75,9 +57,7 @@ export default function TrafficPage() {
 
   // Fetch historical data when time range changes
   useEffect(() => {
-    const minutes = TIME_RANGES[timeRange].minutes
-    fetch(`${API}/bandwidth`, { headers })
-      .then(r => r.json())
+    getBandwidth()
       .then(data => {
         const history: HistoryPoint[] = data.history || []
         // Aggregate by timestamp

@@ -1,2 +1,0 @@
-Admin_Username = "admin"
-Admin_password = "admin123"

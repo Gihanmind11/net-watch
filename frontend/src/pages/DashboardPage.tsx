@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 import type { Device, Alert, Stats } from '../types'
+import { getAlerts, getBandwidth, getDevices, getStats } from '../api'
 import KpiCard from '../components/KpiCard'
 import StatusBadge from '../components/StatusBadge'
 import PingBar from '../components/PingBar'
 import AlertItem from '../components/AlertItem'
-
-const API = 'http://localhost:5000/api'
 
 interface TrafficPoint { time: string; in: number; out: number }
 
@@ -19,13 +18,11 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
   const [bwPct, setBwPct] = useState(0)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
-
   useEffect(() => {
     const fetchAll = () => {
-      fetch(`${API}/stats`, { headers }).then(r => r.json()).then(setStats).catch(() => {})
-      fetch(`${API}/devices`, { headers }).then(r => r.json()).then(d => setDevices(d.devices || [])).catch(() => {})
-      fetch(`${API}/alerts`, { headers }).then(r => r.json()).then(d => setAlerts((d.alerts || []).slice(0, 4))).catch(() => {})
+      getStats().then(setStats).catch(() => {})
+      getDevices().then(d => setDevices(d.devices || [])).catch(() => {})
+      getAlerts().then(d => setAlerts((d.alerts || []).slice(0, 4))).catch(() => {})
     }
     fetchAll()
     const id = setInterval(fetchAll, 5000)
@@ -34,16 +31,15 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
 
   useEffect(() => {
     if (scanVersion && scanVersion > 0) {
-      fetch(`${API}/stats`, { headers }).then(r => r.json()).then(setStats).catch(() => {})
-      fetch(`${API}/devices`, { headers }).then(r => r.json()).then(d => setDevices(d.devices || [])).catch(() => {})
-      fetch(`${API}/alerts`, { headers }).then(r => r.json()).then(d => setAlerts((d.alerts || []).slice(0, 4))).catch(() => {})
+      getStats().then(setStats).catch(() => {})
+      getDevices().then(d => setDevices(d.devices || [])).catch(() => {})
+      getAlerts().then(d => setAlerts((d.alerts || []).slice(0, 4))).catch(() => {})
     }
   }, [scanVersion])
 
   useEffect(() => {
     const fetchBandwidth = () => {
-      fetch(`${API}/bandwidth`, { headers })
-        .then(r => r.json())
+      getBandwidth()
         .then(data => {
           const current = data.current || {}
           let totalIn = 0

@@ -28,6 +28,32 @@ export interface Stats {
   online: number;
   offline: number;
   avg_latency: number;
+  warning?: number;
+  new_devices?: number;
+}
+
+export interface TopologyNode {
+  id: string;
+  label: string;
+  ip: string;
+  type: string;
+  x: number;
+  y: number;
+  status: 'up' | 'warn' | 'down';
+}
+
+export interface TopologyData {
+  nodes: TopologyNode[];
+  edges: [string, string][];
+}
+
+export interface NetworkInterface {
+  name: string;
+  speed: string;
+  total_in: number;
+  total_out: number;
+  errors: number;
+  status: 'UP' | 'DOWN';
 }
 
 export interface Talker {
@@ -64,4 +90,7 @@ export interface AlertResponse {
   critical?: number;
   warning?: number;
   new?: number;
+  total?: number;
+  info?: number;
+  new_devices?: number;
 }

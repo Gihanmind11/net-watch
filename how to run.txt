@@ -1,14 +1,35 @@
-To get started, install Python and run:
-  # Terminal 1 — Backend
-  cd backend
-  pip install -r requirements.txt
-  python app.py
-cd
-  # Terminal 2 — Frontend
-  cd frontend
-  npm start or npm run dev
+HOW TO RUN — NetWatch Network Monitoring System
+================================================
 
-  # for errors checking
-  
+Quickest way (everything in one command, Docker required):
+  docker compose up --build
+    - Dashboard:      http://localhost:8080
+    - API docs:       http://localhost:8000/docs
+    - Login:          admin / admin
+
+Local development (no Docker):
+
+  1) Backend (Python 3.10+):
+     cd backend
+     python -m venv .venv
+     .venv\Scripts\activate          (Windows)
+     source .venv/bin/activate       (Linux/macOS)
+     pip install -r requirements.txt
+     uvicorn app.main:app --reload --port 8000
+
+     Defaults to SQLite (netmon.db) + in-memory event bus — no extra setup.
+     For PostgreSQL/TimescaleDB + Redis: copy .env.example to .env and set
+     DATABASE_URL / REDIS_URL (or run `docker compose up db redis`).
+
+  2) Frontend (Node.js 18+):
+     cd frontend
+     npm install
+     npm run dev
+     Open http://localhost:5173  — login: admin / admin
+
+     The Vite server proxies /api and /ws to the backend automatically.
+     All data comes live from the backend — there is no mock data.
+
+Error checking:
   npm run lint
   npm run build

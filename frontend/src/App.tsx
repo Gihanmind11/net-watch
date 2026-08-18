@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { PageId, AlertResponse, ScanResult, LoginResponse, User } from './types'
+import type { PageId, AlertResponse, ScanResult, LoginResponse } from './types'
+import { getAlerts, logout, scanNetwork } from './api'
 import TopBar from './components/TopBar'
 import Sidebar from './components/Sidebar'
 import LoginPage from './pages/LoginPage'
@@ -10,8 +11,6 @@ import TrafficPage from './pages/TrafficPage'
 import PerformancePage from './pages/PerformancePage'
 import AlertsPage from './pages/AlertsPage'
 import AboutPage from './pages/AboutPage'
-
-const API = 'http://localhost:5000/api'
 
 const pageComponents: Record<PageId, React.FC> = {
   dashboard: DashboardPage,
@@ -26,11 +25,6 @@ const pageComponents: Record<PageId, React.FC> = {
 export default function App() {
   // Auth state
   const [accessToken, setAccessToken] = useState<string | null>(() => localStorage.getItem('nw_access_token'))
-  const [refreshToken, setRefreshToken] = useState<string | null>(() => localStorage.getItem('nw_refresh_token'))
-  const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const userStr = localStorage.getItem('nw_user')
-    return userStr ? JSON.parse(userStr) : null
-  })
 
   const [activePage, setActivePage] = useState<PageId>('dashboard')
   const [alertStats, setAlertStats] = useState({ critical: 0, warning: 0 })
@@ -38,17 +32,9 @@ export default function App() {
   const [scanVersion, setScanVersion] = useState(0)
   const [toast, setToast] = useState<string | null>(null)
 
-  const authHeaders = accessToken ? { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' } : {}
-
   const handleLogout = useCallback(async () => {
     try {
-      if (refreshToken) {
-        await fetch(`${API}/logout`, {
-          method: 'POST',
-          headers: authHeaders,
-          body: JSON.stringify({ refresh_token: refreshToken })
-        })
-      }
+      await logout()
     } catch {
       // Ignore logout errors
     } finally {
@@ -57,64 +43,13 @@ export default function App() {
       localStorage.removeItem('nw_refresh_token')
       localStorage.removeItem('nw_user')
       setAccessToken(null)
-      setRefreshToken(null)
-      setCurrentUser(null)
     }
-  }, [refreshToken])
-
-  // Handle token refresh
-  const refreshAccessToken = useCallback(async (): Promise<boolean> => {
-    if (!refreshToken) return false
-    try {
-      const res = await fetch(`${API}/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken })
-      })
-      if (!res.ok) {
-        handleLogout()
-        return false
-      }
-      const data = await res.json()
-      // Update stored data
-      localStorage.setItem('nw_access_token', data.access_token)
-      localStorage.setItem('nw_refresh_token', data.refresh_token)
-      localStorage.setItem('nw_user', JSON.stringify(data.user))
-      setAccessToken(data.access_token)
-      setRefreshToken(data.refresh_token)
-      setCurrentUser(data.user)
-      return true
-    } catch {
-      handleLogout()
-      return false
-    }
-  }, [refreshToken])
-
-  // Check token validity on mount and handle 401s
-  useEffect(() => {
-    if (!accessToken) return
-    const checkAuth = async () => {
-      const res = await fetch(`${API}/alerts`, { headers: authHeaders })
-      if (res.status === 401) {
-        // Try to refresh
-        const refreshed = await refreshAccessToken()
-        if (!refreshed) handleLogout()
-      }
-    }
-    checkAuth()
-  }, [accessToken])
+  }, [])
 
   useEffect(() => {
     if (!accessToken) return
     const fetchStats = async () => {
-      let res = await fetch(`${API}/alerts`, { headers: authHeaders })
-      if (res.status === 401) {
-        const refreshed = await refreshAccessToken()
-        if (!refreshed) return
-        const newHeaders = { 'Authorization': `Bearer ${localStorage.getItem('nw_access_token')}`, 'Content-Type': 'application/json' }
-        res = await fetch(`${API}/alerts`, { headers: newHeaders })
-      }
-      const d: AlertResponse | null = await res.json()
+      const d: AlertResponse | null = await getAlerts()
       if (d) setAlertStats({ critical: d.critical || 0, warning: (d.warning || 0) + (d.new_devices || 0) })
     }
     fetchStats()
@@ -126,18 +61,7 @@ export default function App() {
     if (scanning || !accessToken) return
     setScanning(true)
 
-    let res = await fetch(`${API}/scan`, { method: 'POST', headers: authHeaders })
-    if (res.status === 401) {
-      const refreshed = await refreshAccessToken()
-      if (!refreshed) {
-        setScanning(false)
-        return
-      }
-      const newHeaders = { 'Authorization': `Bearer ${localStorage.getItem('nw_access_token')}`, 'Content-Type': 'application/json' }
-      res = await fetch(`${API}/scan`, { method: 'POST', headers: newHeaders })
-    }
-
-    const result: ScanResult | null = await res.json()
+    const result: ScanResult | null = await scanNetwork()
     if (result) {
       setScanVersion(v => v + 1)
       const msg = `Found ${result.devices_found} device${result.devices_found !== 1 ? 's' : ''} (${result.new_devices} new) in ${result.scan_duration_ms}ms`
@@ -153,8 +77,6 @@ export default function App() {
     localStorage.setItem('nw_refresh_token', loginResponse.refresh_token)
     localStorage.setItem('nw_user', JSON.stringify(loginResponse.user))
     setAccessToken(loginResponse.access_token)
-    setRefreshToken(loginResponse.refresh_token)
-    setCurrentUser(loginResponse.user)
   }, [])
 
   if (!accessToken) {

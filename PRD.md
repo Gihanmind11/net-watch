@@ -14,8 +14,8 @@
 | **Supervisor**     | Mr. Chamith Samarawickrama                   |
 | **Contact**        | 0769226443                                   |
 | **Email**          | gihanmindana8@gmail.com                      |
-| **Version**        | 1.0.0                                        |
-| **Date**           | May 2026                                     |
+| **Version**        | 2.0.0                                        |
+| **Date**           | August 2026                                  |
 
 ---
 
@@ -48,7 +48,7 @@
 
 Modern computer networks consist of multiple connected devices such as laptops, smartphones, servers, and IoT devices. Monitoring these devices is essential to ensure network security, performance, and efficient resource utilization.
 
-This document defines the complete product requirements for the **Network Monitoring System with Real-Time Dashboard** — a web-based system that monitors and visualizes network devices in real time within a Local Area Network (LAN). The system integrates a Python-based network scanner (Scapy), a Flask REST API backend, a React.js frontend dashboard, and Cisco Packet Tracer for network topology simulation and visualization.
+This document defines the complete product requirements for the **Network Monitoring System with Real-Time Dashboard** — a web-based system that monitors and visualizes network devices in real time within a Local Area Network (LAN). The system integrates a Python-based network scanner (Scapy), a FastAPI REST + WebSocket backend, a React.js frontend dashboard, and Cisco Packet Tracer for network topology simulation and visualization.
 
 ### 1.1 Product Vision
 
@@ -88,7 +88,7 @@ To develop a web-based system that monitors and visualizes network devices on a 
 | 6 | Provide a modern, interactive dashboard using React.js | Must Have |
 | 7 | Simulate and visualize network topology using Cisco Packet Tracer | Must Have |
 | 8 | Basic OS detection per device | Should Have |
-| 9 | Store historical scan data in SQLite database | Should Have |
+| 9 | Store historical scan data in a time-series database (PostgreSQL + TimescaleDB) | Should Have |
 | 10 | Export device reports to CSV/PDF | Nice to Have |
 
 ---
@@ -102,8 +102,9 @@ To develop a web-based system that monitors and visualizes network devices on a 
 - Bandwidth and traffic monitoring per network interface
 - Alert system for threshold breaches and new device detection
 - React.js web dashboard with charts, tables, and topology view
-- Flask REST API connecting backend scanner to frontend
-- SQLite database for data persistence
+- FastAPI REST API + WebSocket backend connecting scanner to frontend
+- PostgreSQL + TimescaleDB database for time-series data persistence (SQLite fallback for development)
+- Redis pub/sub event bus for real-time push (in-memory fallback for single instances)
 - Cisco Packet Tracer simulation for topology visualization
 
 ### 4.2 Out of Scope
@@ -261,23 +262,27 @@ To develop a web-based system that monitors and visualizes network devices on a 
                         │ Writes to / Reads from
                         ▼
 ┌─────────────────────────────────────────────────────────┐
-│                  SQLITE DATABASE                         │
-│  Tables: devices, scan_history, alerts, bandwidth_logs  │
+│     POSTGRESQL + TIMESCALEDB (Time-Series Storage)       │
+│  Tables: devices, ping_history (hypertable),            │
+│          alerts, bandwidth_logs (hypertable)            │
 └───────────────────────┬─────────────────────────────────┘
-                        │ ORM / SQL Queries
+                        │ SQLAlchemy 2.0 ORM
                         ▼
 ┌─────────────────────────────────────────────────────────┐
-│               FLASK REST API (Backend)                   │
-│  Endpoints: /devices, /alerts, /bandwidth, /scan, /topo  │
-└───────────────────────┬─────────────────────────────────┘
-                        │ HTTP / JSON
-                        ▼
-┌─────────────────────────────────────────────────────────┐
-│             REACT.JS DASHBOARD (Frontend)                │
-│  Pages: Dashboard, Devices, Topology, Traffic,          │
-│         Performance, Alerts, About                      │
-│  Charts: recharts (AreaChart, BarChart, PieChart)       │
-└─────────────────────────────────────────────────────────┘
+│             FASTAPI BACKEND (Async, Uvicorn)             │
+│  Endpoints: /devices /alerts /bandwidth /scan /stats    │
+│  /topology /interfaces /auth — WS /ws live events      │
+└───────────────┬───────────────────────┬─────────────────┘
+                │ HTTP / JSON           │ WebSocket push
+                ▼                       ▼
+┌────────────────────────┐   ┌──────────────────────────┐
+│    REDIS PUB/SUB       │   │   REACT.JS DASHBOARD      │
+│  Event bus (fan-out)   │   │  Pages: Dashboard,       │
+└────────────────────────┘   │  Devices, Topology,      │
+                             │  Traffic, Performance,   │
+                             │  Alerts, About           │
+                             │  Charts: recharts        │
+                             └──────────────────────────┘
 ```
 
 ---
@@ -298,26 +303,31 @@ To develop a web-based system that monitors and visualizes network devices on a 
 | Technology | Version | Purpose |
 |------------|---------|---------|
 | Python | 3.10+ | Core backend language |
-| Flask | 2.x | REST API framework |
-| Flask-CORS | — | Cross-origin requests from React |
-| APScheduler | 3.x | Periodic scan scheduling |
+| FastAPI | 0.115+ | Async REST API framework (auto OpenAPI docs, Pydantic validation) |
+| Uvicorn | 0.30+ | ASGI server |
+| SQLAlchemy | 2.0+ | ORM for database interaction |
+| WebSockets | — | Real-time push to the dashboard (`/ws`) |
+| APScheduler | 3.x | Periodic scan / ping / bandwidth scheduling |
+| python-jose | 3.3+ | JWT access + refresh tokens |
+| Redis (optional) | 5.x | Pub/sub event bus across API instances |
 
 ### 9.3 Networking Tools
 
 | Technology | Purpose |
 |------------|---------|
-| Scapy | ARP scanning and packet analysis |
+| Scapy | ARP scanning, ICMP ping (TTL-based OS guess), optional protocol sniffing |
 | psutil | Network interface bandwidth stats |
 | socket | Hostname resolution |
-| subprocess (ping) | ICMP latency measurement |
+| subprocess (ping) | ICMP latency fallback (no admin rights required) |
 | Cisco Packet Tracer | Network simulation and topology design |
 
 ### 9.4 Database & Storage
 
 | Technology | Purpose |
 |------------|---------|
-| SQLite | Lightweight local data storage |
-| SQLAlchemy (optional) | ORM for database interaction |
+| PostgreSQL + TimescaleDB | Primary storage; `ping_history` and `bandwidth_logs` as hypertables with retention policies |
+| SQLite | Zero-setup development fallback (identical schema) |
+| Redis | Pub/sub event bus for real-time WebSocket fan-out (optional; in-memory fallback built in) |
 
 ---
 
@@ -350,17 +360,47 @@ def arp_scan(network="192.168.1.0/24"):
     return devices
 ```
 
-### 10.2 Flask REST API Endpoints
+### 10.2 FastAPI REST API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/devices` | Return all discovered devices |
-| GET | `/api/devices/<ip>` | Return single device details |
-| POST | `/api/scan` | Trigger a new ARP scan |
-| GET | `/api/alerts` | Return all active alerts |
-| GET | `/api/bandwidth` | Return current bandwidth stats |
-| GET | `/api/topology` | Return topology node/edge data |
-| GET | `/api/stats` | Return summary KPI statistics |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/auth/login` | — | Issue JWT access + refresh tokens |
+| POST | `/api/auth/refresh` | — | Refresh an expired access token |
+| POST | `/api/auth/logout` | — | Invalidate session (client-side) |
+| GET | `/api/devices` | — | Return all discovered devices |
+| GET | `/api/devices/<ip>` | — | Return single device details |
+| DELETE | `/api/devices` | Bearer | Reset the inventory |
+| POST | `/api/scan` | Bearer | Trigger a new ARP scan |
+| GET | `/api/alerts` | — | Return active alerts |
+| DELETE | `/api/alerts/<id>` | Bearer | Resolve an alert |
+| DELETE | `/api/alerts` | Bearer | Clear all alerts |
+| GET | `/api/bandwidth` | — | Current bandwidth + history + protocol distribution |
+| GET | `/api/bandwidth/interfaces` | — | Per-interface statistics |
+| GET | `/api/bandwidth/top-talkers` | — | Top bandwidth consumers |
+| GET | `/api/topology` | — | Topology node/edge data |
+| GET | `/api/stats` | — | Summary KPI statistics |
+| WS | `/ws` | — | Real-time event stream (devices, alerts, bandwidth, stats) |
+
+### 10.3 Backend Module Structure
+
+```
+backend/
+├── app/
+│   ├── main.py         # FastAPI app, CORS, lifespan (DB init, scheduler, broker)
+│   ├── config.py       # Pydantic settings from environment
+│   ├── database.py     # SQLAlchemy engine/session, TimescaleDB hypertable setup
+│   ├── models.py       # devices, ping_history, alerts, bandwidth_logs
+│   ├── security.py     # JWT issue/verify, PBKDF2 hashing
+│   ├── scanner.py      # Scapy ARP scan → ping sweep fallback → enrichment
+│   ├── monitor.py      # psutil bandwidth sampler, optional Scapy protocol sniffer
+│   ├── events.py       # Redis pub/sub event bus (in-memory fallback)
+│   ├── services.py     # Scan/ping/bandwidth jobs, alert rules, payload builders
+│   ├── scheduler.py    # APScheduler background jobs
+│   └── api/            # auth, devices, alerts, bandwidth, topology, stats, scan, ws
+├── Dockerfile          # API container (libpcap + iputils)
+├── requirements.txt
+└── .env.example
+```
 
 ### 10.3 React Component Tree
 
@@ -444,7 +484,9 @@ App
 
 ## 12. Data Requirements
 
-### 12.1 Database Schema (SQLite)
+### 12.1 Database Schema (PostgreSQL + TimescaleDB)
+
+Time-series tables (`ping_history`, `bandwidth_logs`) are created as **TimescaleDB hypertables** with automatic retention policies. The schema is identical under the SQLite development fallback.
 
 **Table: `devices`**
 ```sql
@@ -455,13 +497,19 @@ CREATE TABLE devices (
     mac_address TEXT,
     device_type TEXT,
     os_guess    TEXT,
+    vendor      TEXT,
     status      TEXT DEFAULT 'unknown',
+    ping_ms     REAL DEFAULT 0,
+    uptime_pct  REAL DEFAULT 0,
+    fail_count  INTEGER DEFAULT 0,
+    total_checks INTEGER DEFAULT 0,
+    total_ups   INTEGER DEFAULT 0,
     last_seen   DATETIME,
     first_seen  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-**Table: `ping_history`**
+**Table: `ping_history`** (hypertable on `checked_at`)
 ```sql
 CREATE TABLE ping_history (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -470,6 +518,9 @@ CREATE TABLE ping_history (
     status      TEXT,
     checked_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+-- TimescaleDB:
+SELECT create_hypertable('ping_history', 'checked_at', if_not_exists => TRUE);
+SELECT add_retention_policy('ping_history', INTERVAL '90 days', if_not_exists => TRUE);
 ```
 
 **Table: `alerts`**
@@ -484,7 +535,7 @@ CREATE TABLE alerts (
 );
 ```
 
-**Table: `bandwidth_logs`**
+**Table: `bandwidth_logs`** (hypertable on `recorded_at`)
 ```sql
 CREATE TABLE bandwidth_logs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -493,15 +544,19 @@ CREATE TABLE bandwidth_logs (
     bytes_out    INTEGER,
     recorded_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+-- TimescaleDB:
+SELECT create_hypertable('bandwidth_logs', 'recorded_at', if_not_exists => TRUE);
+SELECT add_retention_policy('bandwidth_logs', INTERVAL '30 days', if_not_exists => TRUE);
 ```
 
 ### 12.2 Data Flow
 
 ```
-ARP Scan → devices table → Flask API → React State → UI Render
-ICMP Ping → ping_history table → Flask API → Chart Data
-Alert Trigger → alerts table → Flask API → Alert Panel
-psutil → bandwidth_logs table → Flask API → Bandwidth Chart
+ARP Scan → devices table → FastAPI → WebSocket/HTTP → React State → UI Render
+ICMP Ping → ping_history table (hypertable) → FastAPI → Chart Data
+Alert Trigger → alerts table → FastAPI → WebSocket push → Alert Panel
+psutil → bandwidth_logs table (hypertable) → FastAPI → Bandwidth Chart
+Redis pub/sub ⇄ FastAPI ⇄ WebSocket clients (real-time fan-out)
 ```
 
 ---
@@ -555,7 +610,7 @@ psutil → bandwidth_logs table → Flask API → Bandwidth Chart
 
 ### POST `/api/scan`
 
-**Request:** `{}` (empty body triggers scan)
+**Request:** `{}` (empty body triggers scan, requires Bearer token)
 
 **Response:**
 ```json
@@ -567,6 +622,36 @@ psutil → bandwidth_logs table → Flask API → Bandwidth Chart
   "timestamp": "2026-05-16T10:30:00"
 }
 ```
+
+### POST `/api/auth/login`
+
+**Request:**
+```json
+{ "username": "admin", "password": "admin" }
+```
+
+**Response:**
+```json
+{
+  "access_token": "<jwt>",
+  "refresh_token": "<jwt>",
+  "user": { "id": 1, "username": "admin", "role": "admin", "permissions": ["view", "scan", "manage"] }
+}
+```
+
+### WS `/ws` (Real-Time Event Stream)
+
+The backend pushes JSON events to every connected client as they occur:
+
+```json
+{ "type": "devices",   "payload": { "count": 17, "devices": [...] } }
+{ "type": "alerts",    "payload": { "count": 8, "alerts": [...] } }
+{ "type": "bandwidth", "payload": { "current": {...}, "history": [...], "protocols": {...} } }
+{ "type": "stats",     "payload": { "total_devices": 17, "online": 14, ... } }
+{ "type": "scan",      "payload": { "status": "complete", "devices_found": 17, ... } }
+```
+
+On connect, the server first sends a `snapshot` event with the full current state so the dashboard renders instantly without polling.
 
 ---
 
@@ -643,11 +728,11 @@ Server-Web  Server-DB  Server-Mail  NAS
 
 | Week | Tasks | Deliverable |
 |------|-------|-------------|
-| **Week 1** | Research, planning, environment setup | Project proposal, tech stack finalized |
-| **Week 2** | ARP scan implementation using Scapy, ICMP ping module | Working `scanner.py` |
-| **Week 3** | Flask REST API development, SQLite schema | Working API with `/devices`, `/scan` endpoints |
-| **Week 4** | React UI development — Dashboard, Devices, Alerts pages | Frontend skeleton |
-| **Week 5** | Integration (React ↔ Flask ↔ Scanner), Topology visualization, Cisco PT simulation | Full working prototype |
+| **Week 1** | Research, planning, environment setup | Project proposal, tech stack finalized (FastAPI + TimescaleDB) |
+| **Week 2** | ARP scan implementation using Scapy, ICMP ping module | Working `scanner.py` with ping-sweep fallback |
+| **Week 3** | FastAPI REST + WebSocket development, Time-series schema (hypertables) | Working API with `/devices`, `/scan`, `/ws` endpoints |
+| **Week 4** | React UI development — Dashboard, Devices, Alerts pages | Frontend skeleton wired to the live API |
+| **Week 5** | Integration (React ↔ FastAPI ↔ Scanner ↔ Redis), Topology visualization, Cisco PT simulation | Full working prototype |
 | **Week 6** | Testing, bug fixing, documentation, final presentation | Completed project + report |
 
 ---
@@ -684,11 +769,12 @@ Upon completion, the system will:
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| Scapy requires root/admin rights | High | Medium | Document requirement; provide instructions |
+| Scapy requires root/admin rights | High | Medium | Layered discovery: ARP scan → ping-sweep fallback; document requirements |
 | Some devices block ARP/ICMP | Medium | Low | Mark as "unknown" rather than failing |
-| React-Flask CORS issues | Medium | Medium | Use Flask-CORS library |
+| React-FastAPI CORS issues | Medium | Medium | FastAPI CORSMiddleware with explicit origins; Vite dev proxy eliminates CORS entirely |
 | Packet Tracer version incompatibility | Low | Low | Use Packet Tracer 8.x, document version |
-| SQLite write conflicts under load | Low | Low | Use WAL mode; single-writer design |
+| PostgreSQL/Redis not installed on demo machine | Medium | Medium | Docker Compose one-command setup; SQLite + in-memory broker fallback for dev |
+| Bandwidth data growth | Low | Low | TimescaleDB hypertables + retention policies; periodic cleanup job |
 | Network topology changes between scans | Medium | Low | Re-scan on demand; periodic auto-scan |
 
 ---
@@ -696,12 +782,15 @@ Upon completion, the system will:
 ## 20. References
 
 - Python Scapy Documentation — https://scapy.readthedocs.io
-- Flask Documentation — https://flask.palletsprojects.com
+- FastAPI Documentation — https://fastapi.tiangolo.com
+- Uvicorn Documentation — https://www.uvicorn.org
 - React.js Documentation — https://react.dev
 - Recharts Documentation — https://recharts.org
 - Cisco Packet Tracer — https://www.netacad.com/courses/packet-tracer
 - psutil Documentation — https://psutil.readthedocs.io
-- SQLite Documentation — https://sqlite.org/docs.html
+- TimescaleDB Documentation — https://docs.timescale.com
+- Redis Documentation — https://redis.io/docs
+- SQLAlchemy Documentation — https://docs.sqlalchemy.org
 - W3Schools — https://www.w3schools.com
 - YouTube — Network monitoring tutorials
 

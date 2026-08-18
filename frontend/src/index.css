@@ -92,3 +92,15 @@ body::before {
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: var(--color-bg-noc); }
 ::-webkit-scrollbar-thumb { background: var(--color-border-noc); border-radius: 2px; }
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-bg-noc);
+  text-shadow: none;
+}
+
+::-moz-selection {
+  background: var(--color-accent);
+  color: var(--color-bg-noc);
+  text-shadow: none;
+}

@@ -1,19 +1,16 @@
 import { useState, useEffect } from 'react'
 import type { Device } from '../types'
+import { getDevices, resetDevices } from '../api'
 import StatusBadge from '../components/StatusBadge'
 import PingBar from '../components/PingBar'
-
-const API = 'http://localhost:5000/api'
 
 export default function DevicesPage({ scanVersion, token }: { scanVersion?: number; token?: string }) {
   const [devices, setDevices] = useState<Device[]>([])
   const [search, setSearch] = useState('')
 
-  const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
-
   useEffect(() => {
     const fetchDevices = () => {
-      fetch(`${API}/devices`, { headers }).then(r => r.json()).then(d => setDevices(d.devices || [])).catch(() => {})
+      getDevices().then(d => setDevices(d.devices || [])).catch(() => {})
     }
     fetchDevices()
     const id = setInterval(fetchDevices, 5000)
@@ -22,7 +19,7 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
 
   useEffect(() => {
     if (scanVersion && scanVersion > 0) {
-      fetch(`${API}/devices`, { headers }).then(r => r.json()).then(d => setDevices(d.devices || [])).catch(() => {})
+      getDevices().then(d => setDevices(d.devices || [])).catch(() => {})
     }
   }, [scanVersion])
 
@@ -32,10 +29,9 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
   const handleRefresh = async () => {
     setRefreshing(true)
     try {
-      const r = await fetch(`${API}/devices`, { headers })
-      const d = await r.json()
+      const d = await getDevices()
       setDevices(d.devices || [])
-    } catch {}
+    } catch { /* ignore */ }
     setRefreshing(false)
   }
 
@@ -43,9 +39,9 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
     if (!confirm('Clear all discovered devices?')) return
     setResetting(true)
     try {
-      await fetch(`${API}/devices/reset`, { method: 'POST', headers })
+      await resetDevices()
       setDevices([])
-    } catch {}
+    } catch { /* ignore */ }
     setResetting(false)
   }
 

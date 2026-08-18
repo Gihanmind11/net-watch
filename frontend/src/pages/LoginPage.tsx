@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { LoginResponse } from '../types'
-
-const API = 'http://localhost:5000/api'
+import { login } from '../api'
 
 interface LoginPageProps {
   onLogin: (response: LoginResponse) => void
@@ -136,20 +135,10 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     setLoading(true)
 
     try {
-      const res = await fetch(`${API}/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        setGlobalError(data.error || 'Login failed')
-        setLoading(false)
-        return
-      }
+      const data = await login(username, password)
       onLogin(data)
     } catch {
-      setGlobalError('Server unreachable. Please check your connection.')
+      setGlobalError('Login failed. Please try again.')
       setLoading(false)
     }
   }

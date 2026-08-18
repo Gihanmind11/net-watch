@@ -1,17 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { TopologyData, TopologyNode } from '../types'
-
-const API = 'http://localhost:5000/api'
+import { getTopology } from '../api'
 
 export default function TopologyPage() {
   const [topoData, setTopoData] = useState<TopologyData>({ nodes: [], edges: [] })
   const [selected, setSelected] = useState<TopologyNode | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  const headers = { 'Authorization': `Bearer ${localStorage.getItem('nw_token') || ''}` }
-
   useEffect(() => {
-    fetch(`${API}/topology`, { headers }).then(r => r.json()).then(setTopoData).catch(() => {})
+    getTopology().then(setTopoData).catch(() => {})
   }, [])
 
   const drawTopology = useCallback(() => {
