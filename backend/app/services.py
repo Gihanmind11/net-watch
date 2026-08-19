@@ -11,12 +11,24 @@ from .config import get_settings
 from .database import SessionLocal
 from .events import get_broker
 from .monitor import BandwidthSampler, ProtocolMonitor
-from .scanner import ping_host, run_discovery
+from .scanner import get_default_gateway, get_network_cidr, ping_host, run_discovery
 
 settings = get_settings()
 
 bandwidth_sampler = BandwidthSampler()
 protocol_monitor = ProtocolMonitor(settings.sniffing_enabled)
+
+_gateway_cache: dict[str, float] = {"ip": "", "ts": 0.0}
+_GATEWAY_CACHE_TTL = 30.0
+
+
+def current_gateway() -> str:
+    """Default gateway (the hotspot host) with a short TTL cache."""
+    now = time.monotonic()
+    if now - _gateway_cache["ts"] > _GATEWAY_CACHE_TTL:
+        _gateway_cache["ip"] = get_default_gateway()
+        _gateway_cache["ts"] = now
+    return _gateway_cache["ip"]
 
 
 def utcnow() -> datetime:
@@ -51,6 +63,7 @@ def device_payload(device: models.Device) -> dict:
         "last_seen": device.last_seen.isoformat(timespec="seconds") if device.last_seen else None,
         "first_seen": device.first_seen.isoformat(timespec="seconds") if device.first_seen else None,
         "vendor": device.vendor or "",
+        "is_gateway": bool(device.ip_address and device.ip_address == current_gateway()),
     }
 
 
@@ -224,6 +237,22 @@ def _topology_node(device: models.Device, x: int, y: int) -> dict:
 
 # ---------------- background jobs ----------------
 
+_CIDR_SETTING_KEY = "last_detected_network_cidr"
+
+
+def _get_setting(db, key: str) -> str:
+    row = db.get(models.AppSetting, key)
+    return row.value if row is not None else ""
+
+
+def _set_setting(db, key: str, value: str) -> None:
+    row = db.get(models.AppSetting, key)
+    if row is None:
+        db.add(models.AppSetting(key=key, value=value))
+    else:
+        row.value = value
+
+
 def _upsert_device(db, entry: dict):
     device = db.scalar(select(models.Device).where(models.Device.ip_address == entry["ip"]))
     is_new = device is None
@@ -262,9 +291,19 @@ def _upsert_device(db, entry: dict):
 async def run_scan() -> dict:
     """Full discovery cycle. Returns ScanResult-shaped payload."""
     start = time.perf_counter()
-    found = await asyncio.to_thread(run_discovery, settings.network_cidr)
+    cidr = await asyncio.to_thread(get_network_cidr)
+    found = await asyncio.to_thread(run_discovery, cidr)
     new_devices = 0
     with SessionLocal() as db:
+        prev_cidr = _get_setting(db, _CIDR_SETTING_KEY)
+        if prev_cidr and prev_cidr != cidr:
+            # Network changed: drop every previously known device so only
+            # real devices of the new network are shown.
+            db.execute(delete(models.PingHistory))
+            db.execute(delete(models.Alert))
+            db.execute(delete(models.Device))
+        _set_setting(db, _CIDR_SETTING_KEY, cidr)
+        found_ips = {e["ip"] for e in found}
         for entry in found:
             device, is_new = _upsert_device(db, entry)
             if is_new:
@@ -276,10 +315,21 @@ async def run_scan() -> dict:
                         device_ip=device.ip_address,
                     )
                 )
+        if found:
+            # Keep only real, currently connected devices: drop anything that
+            # was not seen in this discovery.
+            stale = [d for d in db.scalars(select(models.Device)).all() if d.ip_address not in found_ips]
+            if stale:
+                stale_ids = [d.id for d in stale]
+                stale_ips = [d.ip_address for d in stale]
+                db.execute(delete(models.PingHistory).where(models.PingHistory.device_id.in_(stale_ids)))
+                db.execute(delete(models.Alert).where(models.Alert.device_ip.in_(stale_ips)))
+                db.execute(delete(models.Device).where(models.Device.id.in_(stale_ids)))
         db.commit()
     duration = int((time.perf_counter() - start) * 1000)
     result = {
         "status": "complete",
+        "network_cidr": cidr,
         "devices_found": len(found),
         "new_devices": new_devices,
         "scan_duration_ms": duration,

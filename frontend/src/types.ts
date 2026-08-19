@@ -13,6 +13,7 @@ export interface Device {
   open_ports: string;
   last_seen: string;
   first_seen: string;
+  is_gateway?: boolean;
 }
 
 export interface Alert {

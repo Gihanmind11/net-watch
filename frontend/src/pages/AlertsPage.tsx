@@ -3,12 +3,12 @@ import type { Alert } from '../types'
 import { clearAlerts, getAlerts, resolveAlert } from '../api'
 import AlertItem from '../components/AlertItem'
 
-type Filter = 'all' | 'crit' | 'warn' | 'info'
+export type AlertFilter = 'all' | 'crit' | 'warn' | 'info'
 
-export default function AlertsPage() {
+export default function AlertsPage({ initialFilter = 'all' }: { initialFilter?: AlertFilter }) {
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [counts, setCounts] = useState({ total: 0, critical: 0, warning: 0, info: 0, new_devices: 0 })
-  const [filter, setFilter] = useState<Filter>('all')
+  const [filter, setFilter] = useState<AlertFilter>(initialFilter)
   const [toast, setToast] = useState<string | null>(null)
   const [clearing, setClearing] = useState(false)
   const prevCriticalRef = useRef(0)
@@ -79,7 +79,7 @@ export default function AlertsPage() {
         return a.level === filter
       })
 
-  const filterButtons: { key: Filter; label: string; count: number; color: string }[] = [
+  const filterButtons: { key: AlertFilter; label: string; count: number; color: string }[] = [
     { key: 'all', label: 'ALL', count: counts.total, color: 'text-text-noc' },
     { key: 'crit', label: 'CRITICAL', count: counts.critical, color: 'text-danger' },
     { key: 'warn', label: 'WARNING', count: counts.warning + counts.new_devices, color: 'text-warn' },

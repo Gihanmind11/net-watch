@@ -7,6 +7,8 @@ import PingBar from '../components/PingBar'
 export default function DevicesPage({ scanVersion, token }: { scanVersion?: number; token?: string }) {
   const [devices, setDevices] = useState<Device[]>([])
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
 
   useEffect(() => {
     const fetchDevices = () => {
@@ -51,6 +53,21 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
     d.mac.toLowerCase().includes(search.toLowerCase())
   )
 
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const safePage = Math.min(page, totalPages)
+  const pageItems = filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
+
+  const pageNumbers: (number | '…')[] = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pageNumbers.push(i)
+  } else {
+    pageNumbers.push(1)
+    if (safePage > 3) pageNumbers.push('…')
+    for (let i = Math.max(2, safePage - 1); i <= Math.min(totalPages - 1, safePage + 1); i++) pageNumbers.push(i)
+    if (safePage < totalPages - 2) pageNumbers.push('…')
+    pageNumbers.push(totalPages)
+  }
+
   return (
     <>
       <div className="font-display font-extrabold text-2xl text-text-noc tracking-[2px] mb-5 flex items-center gap-3">
@@ -87,7 +104,10 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
             className="bg-bg-noc border border-border-noc text-text-noc px-3 py-1.5 rounded text-[13px] font-body w-[220px] focus:outline-none focus:border-accent"
             placeholder="Search device name or IP..."
             value={search}
-            onChange={e => setSearch(e.target.value)}
+            onChange={e => {
+              setSearch(e.target.value)
+              setPage(1)
+            }}
           />
         </div>
         <div className="p-0">
@@ -100,10 +120,15 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
               </tr>
             </thead>
             <tbody>
-              {filtered.map((d, i) => (
-                <tr key={d.ip} className="hover:bg-accent/[0.03]">
-                  <td className="px-3 py-2.5 border-b border-border-noc/40 text-[13px] text-muted font-mono-noc text-[11px]">{String(i + 1).padStart(2, '0')}</td>
-                  <td className="px-3 py-2.5 border-b border-border-noc/40 text-[13px] font-semibold">{d.device_name}</td>
+              {pageItems.map((d, i) => (
+                <tr key={d.ip} className={d.is_gateway ? 'bg-accent/10 shadow-[inset_3px_0_0_var(--color-accent)]' : 'hover:bg-accent/[0.03]'}>
+                  <td className="px-3 py-2.5 border-b border-border-noc/40 text-[13px] text-muted font-mono-noc text-[11px]">{String((safePage - 1) * pageSize + i + 1).padStart(2, '0')}</td>
+                  <td className="px-3 py-2.5 border-b border-border-noc/40 text-[13px] font-semibold">
+                    {d.device_name}
+                    {d.is_gateway && (
+                      <span className="ml-2 inline-block px-1.5 py-0.5 bg-accent/20 border border-accent/40 rounded text-[9px] font-mono-noc tracking-[1px] text-accent">GATEWAY</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 font-mono-noc text-xs text-muted">{d.ip}</td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 font-mono-noc text-xs text-muted">{d.mac}</td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 text-muted text-xs">{d.type}</td>
@@ -132,6 +157,47 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
               )}
             </tbody>
           </table>
+        </div>
+        <div className="flex items-center justify-between px-[18px] py-3 border-t border-border-noc bg-panel2">
+          <div className="text-[11px] font-mono-noc text-muted tracking-[1px]">
+            {filtered.length === 0
+              ? '0 DEVICES'
+              : `SHOWING ${(safePage - 1) * pageSize + 1}–${Math.min(safePage * pageSize, filtered.length)} OF ${filtered.length} DEVICES`}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <select
+              value={pageSize}
+              onChange={e => {
+                setPageSize(Number(e.target.value))
+                setPage(1)
+              }}
+              className="bg-bg-noc border border-border-noc text-text-noc px-2 py-1 rounded text-[11px] font-mono-noc focus:outline-none focus:border-accent"
+              title="Devices per page"
+            >
+              {[5, 10, 25, 50].map(n => <option key={n} value={n}>{n} / PAGE</option>)}
+            </select>
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={safePage === 1}
+              className="px-2.5 py-1 border border-border-noc rounded text-[11px] font-mono-noc text-muted disabled:opacity-30 disabled:cursor-not-allowed hover:border-accent/50 hover:text-accent transition-all"
+            >‹</button>
+            {pageNumbers.map((n, idx) =>
+              n === '…' ? (
+                <span key={`e${idx}`} className="px-1 text-[11px] font-mono-noc text-muted">…</span>
+              ) : (
+                <button
+                  key={n}
+                  onClick={() => setPage(n)}
+                  className={`px-2.5 py-1 border rounded text-[11px] font-mono-noc transition-all ${n === safePage ? 'bg-accent/20 border-accent/60 text-accent' : 'border-border-noc text-muted hover:border-accent/50 hover:text-accent'}`}
+                >{n}</button>
+              )
+            )}
+            <button
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={safePage === totalPages}
+              className="px-2.5 py-1 border border-border-noc rounded text-[11px] font-mono-noc text-muted disabled:opacity-30 disabled:cursor-not-allowed hover:border-accent/50 hover:text-accent transition-all"
+            >›</button>
+          </div>
         </div>
       </div>
     </>

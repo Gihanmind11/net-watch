@@ -3,9 +3,10 @@ import { useState, useEffect } from 'react'
 interface TopBarProps {
   stats: { critical: number; warning: number }
   onLogout: () => void
+  onOpenAlerts: (filter: 'crit' | 'warn') => void
 }
 
-export default function TopBar({ stats, onLogout }: TopBarProps) {
+export default function TopBar({ stats, onLogout, onOpenAlerts }: TopBarProps) {
   const [time, setTime] = useState('')
 
   useEffect(() => {
@@ -29,14 +30,22 @@ export default function TopBar({ stats, onLogout }: TopBarProps) {
             <div className="w-[7px] h-[7px] rounded-full bg-accent2 shadow-[0_0_8px_var(--color-accent2)] animate-blink" />SYSTEM ONLINE
           </div>
           {stats.warning > 0 && (
-            <div className="flex items-center gap-1.5 bg-accent/8 border border-accent/20 px-3 py-1 rounded-[20px] text-xs font-semibold tracking-[1px]">
+            <button
+              onClick={() => onOpenAlerts('warn')}
+              title="View warnings in Alert Center"
+              className="flex items-center gap-1.5 bg-accent/8 border border-accent/20 px-3 py-1 rounded-[20px] text-xs font-semibold tracking-[1px] cursor-pointer transition-all hover:bg-warn/15 hover:border-warn/50"
+            >
               <div className="w-[7px] h-[7px] rounded-full bg-warn shadow-[0_0_8px_var(--color-warn)]" />{stats.warning} WARNING{stats.warning > 1 ? 'S' : ''}
-            </div>
+            </button>
           )}
           {stats.critical > 0 && (
-            <div className="flex items-center gap-1.5 bg-accent/8 border border-accent/20 px-3 py-1 rounded-[20px] text-xs font-semibold tracking-[1px]">
+            <button
+              onClick={() => onOpenAlerts('crit')}
+              title="View critical alerts in Alert Center"
+              className="flex items-center gap-1.5 bg-accent/8 border border-accent/20 px-3 py-1 rounded-[20px] text-xs font-semibold tracking-[1px] cursor-pointer transition-all hover:bg-danger/15 hover:border-danger/50"
+            >
               <div className="w-[7px] h-[7px] rounded-full bg-danger shadow-[0_0_8px_var(--color-danger)]" />{stats.critical} CRITICAL
-            </div>
+            </button>
           )}
         </div>
         <div className="font-mono-noc text-[13px] text-muted tracking-[1px]">

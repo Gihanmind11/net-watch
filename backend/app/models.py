@@ -61,3 +61,10 @@ class BandwidthLog(Base):
     bytes_in: Mapped[int] = mapped_column(BigInteger, default=0)
     bytes_out: Mapped[int] = mapped_column(BigInteger, default=0)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")

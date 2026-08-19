@@ -44,9 +44,13 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
           const current = data.current || {}
           let totalIn = 0
           let totalOut = 0
-          for (const iface of Object.values(current) as Array<{ mbps_in?: number; mbps_out?: number }>) {
+          let totalSpeed = 0
+          let maxUtil = 0
+          for (const iface of Object.values(current) as Array<{ mbps_in?: number; mbps_out?: number; speed_mbps?: number; utilization?: number }>) {
             totalIn += iface.mbps_in || 0
             totalOut += iface.mbps_out || 0
+            totalSpeed += iface.speed_mbps || 0
+            maxUtil = Math.max(maxUtil, iface.utilization || 0)
           }
           const now = new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
           setTrafficData(prev => {
@@ -54,8 +58,9 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
             if (next.length > 30) next.shift()
             return next
           })
-          setNetLoad(Math.round(Math.min(totalIn + totalOut, 100)))
-          setBwPct(Math.round(Math.min(totalIn, 100)))
+          const netLoadPct = totalSpeed > 0 ? (totalIn + totalOut) / totalSpeed * 100 : 0
+          setNetLoad(Math.round(Math.min(Math.max(netLoadPct, 0), 100)))
+          setBwPct(Math.round(Math.min(Math.max(maxUtil, 0), 100)))
         })
         .catch(() => {})
     }
@@ -87,7 +92,13 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
         <div className="bg-panel border border-border-noc rounded-[10px] overflow-hidden">
           <div className="flex items-center justify-between px-[18px] py-3.5 border-b border-border-noc bg-panel2">
             <div className="font-display font-bold text-sm tracking-[1px] text-accent flex items-center gap-2">{'\u25B2'} Network Traffic (Mbps)</div>
-            <div className="text-[11px] text-muted font-mono-noc">LIVE</div>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-4 text-[11px] font-mono-noc tracking-[1px]">
+                <span className="flex items-center gap-1.5 text-text-noc"><span className="w-2.5 h-2.5 rounded-[3px] bg-accent" style={{ boxShadow: '0 0 6px var(--color-accent)' }} />INBOUND</span>
+                <span className="flex items-center gap-1.5 text-text-noc"><span className="w-2.5 h-2.5 rounded-[3px] bg-accent2" style={{ boxShadow: '0 0 6px var(--color-accent2)' }} />OUTBOUND</span>
+              </div>
+              <div className="text-[11px] text-muted font-mono-noc">LIVE</div>
+            </div>
           </div>
           <div className="p-4 relative">
             <div className="absolute left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-accent to-transparent animate-scan-sweep pointer-events-none" style={{ boxShadow: '0 0 12px var(--color-accent)' }} />
@@ -96,7 +107,7 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
                 <AreaChart data={trafficData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(26,58,92,0.3)" />
                   <XAxis dataKey="time" tick={false} />
-                  <YAxis tick={{ fill: '#4a7090', fontFamily: "'Share Tech Mono'", fontSize: 10 }} />
+                  <YAxis tick={{ fill: '#4a7090', fontFamily: "'Share Tech Mono'", fontSize: 10 }} label={{ value: 'Mbps', angle: -90, position: 'insideLeft', style: { fill: '#4a7090', fontFamily: "'Share Tech Mono'", fontSize: 10, letterSpacing: '1px' } }} />
                   <Tooltip contentStyle={{ background: 'rgba(11,22,35,0.95)', border: '1px solid #1a3a5c', borderRadius: 6, fontFamily: "'Share Tech Mono'", fontSize: 12 }} />
                   <Area type="monotone" dataKey="in" stroke="#00d4ff" fill="rgba(0,212,255,0.08)" strokeWidth={2} dot={false} name="Inbound" />
                   <Area type="monotone" dataKey="out" stroke="#00ff88" fill="rgba(0,255,136,0.05)" strokeWidth={2} dot={false} name="Outbound" />

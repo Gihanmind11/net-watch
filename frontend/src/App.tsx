@@ -1,18 +1,21 @@
-import { useState, useEffect, useCallback } from 'react'
+import { lazy, Suspense, useState, useEffect, useCallback } from 'react'
+import type { ComponentType } from 'react'
 import type { PageId, AlertResponse, ScanResult, LoginResponse } from './types'
 import { getAlerts, logout, scanNetwork } from './api'
 import TopBar from './components/TopBar'
 import Sidebar from './components/Sidebar'
 import LoginPage from './pages/LoginPage'
-import DashboardPage from './pages/DashboardPage'
-import DevicesPage from './pages/DevicesPage'
-import TopologyPage from './pages/TopologyPage'
-import TrafficPage from './pages/TrafficPage'
-import PerformancePage from './pages/PerformancePage'
-import AlertsPage from './pages/AlertsPage'
-import AboutPage from './pages/AboutPage'
+import type { AlertFilter } from './pages/AlertsPage'
 
-const pageComponents: Record<PageId, React.FC> = {
+const DashboardPage = lazy(() => import('./pages/DashboardPage'))
+const DevicesPage = lazy(() => import('./pages/DevicesPage'))
+const TopologyPage = lazy(() => import('./pages/TopologyPage'))
+const TrafficPage = lazy(() => import('./pages/TrafficPage'))
+const PerformancePage = lazy(() => import('./pages/PerformancePage'))
+const AlertsPage = lazy(() => import('./pages/AlertsPage'))
+const AboutPage = lazy(() => import('./pages/AboutPage'))
+
+const pageComponents: Record<PageId, ComponentType> = {
   dashboard: DashboardPage,
   devices: DevicesPage,
   topology: TopologyPage,
@@ -22,11 +25,20 @@ const pageComponents: Record<PageId, React.FC> = {
   about: AboutPage,
 }
 
+function PageLoader() {
+  return (
+    <div className="flex items-center justify-center py-24">
+      <div className="animate-blink font-mono-noc text-sm tracking-[2px] text-accent">LOADING…</div>
+    </div>
+  )
+}
+
 export default function App() {
   // Auth state
   const [accessToken, setAccessToken] = useState<string | null>(() => localStorage.getItem('nw_access_token'))
 
   const [activePage, setActivePage] = useState<PageId>('dashboard')
+  const [alertFilter, setAlertFilter] = useState<AlertFilter>('all')
   const [alertStats, setAlertStats] = useState({ critical: 0, warning: 0 })
   const [scanning, setScanning] = useState(false)
   const [scanVersion, setScanVersion] = useState(0)
@@ -71,6 +83,11 @@ export default function App() {
     setTimeout(() => setScanning(false), 3000)
   }, [scanning, accessToken])
 
+  const handleOpenAlerts = useCallback((filter: 'crit' | 'warn') => {
+    setAlertFilter(filter)
+    setActivePage('alerts')
+  }, [])
+
   const handleLogin = useCallback((loginResponse: LoginResponse) => {
     // Store securely in localStorage (note: in production use HttpOnly cookies if possible)
     localStorage.setItem('nw_access_token', loginResponse.access_token)
@@ -87,7 +104,7 @@ export default function App() {
 
   return (
     <>
-      <TopBar stats={alertStats} onLogout={handleLogout} />
+      <TopBar stats={alertStats} onLogout={handleLogout} onOpenAlerts={handleOpenAlerts} />
       <div className="relative z-[1]">
         <Sidebar
           activePage={activePage}
@@ -97,13 +114,17 @@ export default function App() {
           scanning={scanning}
         />
         <main className="ml-[220px] p-6">
-          {activePage === 'dashboard' ? (
-            <DashboardPage scanVersion={scanVersion} token={accessToken} />
-          ) : activePage === 'devices' ? (
-            <DevicesPage scanVersion={scanVersion} token={accessToken} />
-          ) : (
-            <PageComponent />
-          )}
+          <Suspense fallback={<PageLoader />}>
+            {activePage === 'dashboard' ? (
+              <DashboardPage scanVersion={scanVersion} token={accessToken} />
+            ) : activePage === 'devices' ? (
+              <DevicesPage scanVersion={scanVersion} token={accessToken} />
+            ) : activePage === 'alerts' ? (
+              <AlertsPage key={alertFilter} initialFilter={alertFilter} />
+            ) : (
+              <PageComponent />
+            )}
+          </Suspense>
         </main>
       </div>
       {toast && (

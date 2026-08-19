@@ -91,17 +91,42 @@ _ROUTER_VENDORS = {"Cisco", "TP-Link", "Netgear", "D-Link", "Huawei", "Asus", "L
 
 
 def get_network_cidr() -> str:
-    """Derive the local /24 from the active interface; fall back to config."""
+    """Auto-detect the active local network from OS interfaces.
+
+    Picks the interface whose subnet contains the default gateway (the real
+    uplink), falling back to the first non-loopback IPv4 interface, then to
+    the NETWORK_CIDR env setting. Uses the real netmask when available.
+    """
     try:
         import psutil
+    except ImportError:
+        return settings.network_cidr
 
-        for _name, addrs in psutil.net_if_addrs().items():
-            for addr in addrs:
-                if addr.family == socket.AF_INET and not addr.address.startswith("127."):
-                    return str(ipaddress.ip_network(f"{addr.address}/24", strict=False))
-    except Exception:
-        pass
-    return settings.network_cidr
+    candidates: list[ipaddress.IPv4Network] = []
+    for _name, addrs in psutil.net_if_addrs().items():
+        for addr in addrs:
+            if addr.family != socket.AF_INET or addr.address.startswith("127."):
+                continue
+            try:
+                net = ipaddress.ip_network(f"{addr.address}/{addr.netmask}", strict=False)
+            except (ValueError, TypeError):
+                net = ipaddress.ip_network(f"{addr.address}/24", strict=False)
+            candidates.append(net)
+
+    if not candidates:
+        return settings.network_cidr
+
+    gateway = get_default_gateway()
+    if gateway:
+        try:
+            gw_ip = ipaddress.ip_address(gateway)
+            for net in candidates:
+                if gw_ip in net:
+                    return str(net)
+        except ValueError:
+            pass
+
+    return str(candidates[0])
 
 
 def get_default_gateway() -> str:
