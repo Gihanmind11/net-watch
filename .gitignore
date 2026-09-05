@@ -25,4 +25,5 @@ uvicorn.err.log
 
 # Local tooling artifacts
 .opencode/
+opencode.json
 graphify-out/

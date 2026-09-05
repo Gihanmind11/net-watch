@@ -26,7 +26,11 @@ from .config import get_settings
 settings = get_settings()
 
 try:
-    from scapy.all import ARP, Ether, ICMP, IP, sr1, srp
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Diffie-Hellman over finite fields .*")
+        from scapy.all import ARP, Ether, ICMP, IP, sr1, srp
 
     HAVE_SCAPY = True
 except Exception:
