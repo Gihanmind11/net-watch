@@ -170,7 +170,7 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
                   </tr>
                 ))}
                 {devices.length === 0 && (
-                  <tr><td colSpan={4} className="text-center text-muted p-5 text-[13px]">No devices discovered yet. Click SCAN NETWORK.</td></tr>
+                  <tr><td colSpan={4} className="text-center text-muted p-5 text-[13px]">No devices discovered yet. The scanner runs every 30s — results appear automatically.</td></tr>
                 )}
               </tbody>
             </table>

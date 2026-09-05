@@ -7,6 +7,7 @@ export interface Device {
   mac: string;
   type: string;
   os: string;
+  vendor?: string;
   status: 'up' | 'down' | 'warn' | 'unknown';
   ping_ms: number;
   uptime_pct: number;
