@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Scanning & monitoring
     network_cidr: str = "192.168.1.0/24"
     scan_interval_sec: int = 30
-    ping_interval_sec: int = 30
+    ping_interval_sec: int = 10
     bandwidth_interval_sec: int = 2
     latency_warn_ms: int = 30
     latency_crit_ms: int = 100
@@ -39,7 +39,11 @@ class Settings(BaseSettings):
 
     # Storage
     history_retention_days: int = 30
-    demo_seed_enabled: bool = True
+    demo_seed_enabled: bool = False
+    # Grace window before a device absent from discovery is dropped. Wireless
+    # clients behind home broadband routers sleep often and disappear from
+    # ARP/ping for a while — a single missed scan is not proof of disconnect.
+    stale_device_grace_sec: int = 300
 
 
 @lru_cache

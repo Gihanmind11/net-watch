@@ -11,7 +11,7 @@ from .config import get_settings
 from .database import SessionLocal
 from .events import get_broker
 from .monitor import BandwidthSampler, ProtocolMonitor
-from .scanner import get_default_gateway, get_network_cidr, ping_host, run_discovery
+from .scanner import arp_table, get_default_gateway, get_network_cidr, ping_host, run_discovery, usable_unicast_mac
 
 settings = get_settings()
 
@@ -277,9 +277,12 @@ def _upsert_device(db, entry: dict):
             device.hostname = entry["hostname"]
         if not device.vendor and entry.get("vendor"):
             device.vendor = entry["vendor"]
-        if not device.device_type and entry.get("device_type"):
+        # Always refresh type/OS from the latest discovery: an earlier scan may
+        # have stored a wrong guess (e.g. a Windows box misread as Android via
+        # a TTL-64 probe) and it must be corrected, not kept forever.
+        if entry.get("device_type"):
             device.device_type = entry["device_type"]
-        if not device.os_guess and entry.get("os"):
+        if entry.get("os"):
             device.os_guess = entry["os"]
         if status == "up" and device.status in ("unknown", "down"):
             device.status = "up"
@@ -317,8 +320,16 @@ async def run_scan() -> dict:
                 )
         if found:
             # Keep only real, currently connected devices: drop anything that
-            # was not seen in this discovery.
-            stale = [d for d in db.scalars(select(models.Device)).all() if d.ip_address not in found_ips]
+            # was not seen in this discovery AND has been quiet past the grace
+            # window. Wireless clients (phones, IoT behind home broadband
+            # routers) sleep often and vanish from ARP/ping briefly, so a
+            # single missed scan is not proof of disconnection.
+            grace_cutoff = utcnow() - timedelta(seconds=settings.stale_device_grace_sec)
+            stale = [
+                d
+                for d in db.scalars(select(models.Device)).all()
+                if d.ip_address not in found_ips and (d.last_seen or utcnow()) < grace_cutoff
+            ]
             if stale:
                 stale_ids = [d.id for d in stale]
                 stale_ips = [d.ip_address for d in stale]
@@ -343,7 +354,14 @@ async def run_scan() -> dict:
 
 
 async def run_ping_cycle() -> None:
-    """Ping every known device, update status/uptime, raise latency & offline alerts."""
+    """Ping every known device, update status/uptime, raise latency & offline alerts.
+
+    When ICMP fails, the system ARP table is consulted: many real devices
+    (phones, printers, IoT) silently drop ping probes while remaining
+    connected at Layer 2. A fresh unicast MAC entry counts as evidence of
+    connectivity, so the device is kept "up" (with the last known latency)
+    instead of being flapped to "down".
+    """
     with SessionLocal() as db:
         devices = db.scalars(select(models.Device)).all()
     if not devices:
@@ -353,10 +371,16 @@ async def run_ping_cycle() -> None:
 
     async def check(device: models.Device):
         async with sem:
-            return device, await asyncio.to_thread(ping_host, device.ip_address)
+            # Unicast the probe straight to the known MAC when we have one —
+            # avoids Scapy's broadcast fallback for unresolved neighbors.
+            return device, await asyncio.to_thread(ping_host, device.ip_address, 1000, device.mac_address or "")
 
     results = await asyncio.gather(*(check(d) for d in devices))
     now = utcnow()
+
+    # One ARP read per cycle (cheap) to arbitrate ICMP failures.
+    need_arp = any(reply is None for _d, reply in results)
+    arp_cache = arp_table() if need_arp else {}
 
     with SessionLocal() as db:
         history: list[models.PingHistory] = []
@@ -364,6 +388,26 @@ async def run_ping_cycle() -> None:
             live = db.get(models.Device, device.id)
             if live is None:
                 continue
+            if reply is None and arp_cache:
+                mac = arp_cache.get(live.ip_address, "")
+                if usable_unicast_mac(mac):
+                    # L2-reachable (ping-blocked device): keep alive without
+                    # inventing a fake latency value.
+                    live.total_checks += 1
+                    live.total_ups += 1
+                    live.fail_count = 0
+                    if live.status == "down":
+                        live.status = "up"
+                        db.add(
+                            models.Alert(
+                                level="info",
+                                message=f"{live.hostname} ({live.ip_address}) — Device recovered",
+                                device_ip=live.ip_address,
+                            )
+                        )
+                    history.append(models.PingHistory(device_id=live.id, ping_ms=live.ping_ms or 0.0, status=live.status, checked_at=now))
+                    live.last_seen = now
+                    continue
             live.total_checks += 1
             if reply is None:
                 live.fail_count += 1

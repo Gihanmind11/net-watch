@@ -114,7 +114,7 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                {['#', 'DEVICE NAME', 'IP ADDRESS', 'MAC ADDRESS', 'TYPE', 'OS', 'STATUS', 'OPEN PORTS', 'LATENCY', 'UPTIME', 'FIRST CONNECTED'].map(h => (
+                {['#', 'DEVICE NAME', 'IP ADDRESS', 'MAC ADDRESS', 'VENDOR', 'TYPE', 'OS', 'STATUS', 'OPEN PORTS', 'LATENCY', 'UPTIME', 'FIRST CONNECTED'].map(h => (
                   <th key={h} className="text-[10px] tracking-[2px] text-muted text-left px-3 py-2 border-b border-border-noc font-mono-noc">{h}</th>
                 ))}
               </tr>
@@ -131,6 +131,7 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
                   </td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 font-mono-noc text-xs text-muted">{d.ip}</td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 font-mono-noc text-xs text-muted">{d.mac}</td>
+                  <td className="px-3 py-2.5 border-b border-border-noc/40 text-xs text-muted">{d.vendor || '—'}</td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 text-muted text-xs">{d.type}</td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 text-xs">{d.os}</td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40"><StatusBadge status={d.status} /></td>
@@ -151,8 +152,8 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={11} className="text-center text-muted p-[30px] text-[13px]">
-                  {devices.length === 0 ? 'No devices discovered yet. Click SCAN NETWORK.' : 'No devices match your search.'}
+                <tr><td colSpan={12} className="text-center text-muted p-[30px] text-[13px]">
+                  {devices.length === 0 ? 'No devices discovered yet. The scanner runs every 30s — wireless clients appear here automatically.' : 'No devices match your search.'}
                 </td></tr>
               )}
             </tbody>

@@ -6,7 +6,7 @@ Real-time LAN monitoring dashboard with device discovery, traffic analysis, aler
 - **Backend:** FastAPI + Uvicorn + SQLAlchemy 2.0 + APScheduler + WebSockets
 - **Storage:** PostgreSQL + TimescaleDB (hypertables) — SQLite fallback for dev
 - **Realtime:** Redis pub/sub event bus → WebSocket push to the dashboard (in-memory fallback)
-- **Discovery:** Scapy ARP scan → ICMP ping-sweep fallback → psutil bandwidth sampling
+- **Discovery:** Scapy ARP scan → ICMP ping-sweep fallback → system ARP-cache merge (catches wireless clients that ignore probes) → psutil bandwidth sampling
 
 ## Prerequisites
 
@@ -61,8 +61,11 @@ npm run dev
 The Vite dev server proxies `/api` and `/ws` to `http://localhost:8000`, so the dashboard
 talks to the live backend automatically. Open http://localhost:5173 and log in with `admin` / `admin`.
 
-On first boot the backend seeds demo devices/alerts so the dashboard is alive immediately,
-then an initial ARP scan (or ping sweep) runs 1 second after startup and merges real LAN devices.
+Demo seeding is disabled by default, so only real devices are shown. An initial ARP scan
+(or ping sweep) runs 1 second after startup and repeats every 30s. On wireless home
+networks (broadband routers) clients that ignore ICMP/ARP probes are still picked up
+from the system ARP cache, and devices quiet for more than `STALE_DEVICE_GRACE_SEC`
+(default 300s) are dropped from the inventory.
 
 ## Project Structure
 
@@ -75,7 +78,7 @@ Network Monitoring System/
 │   │   ├── database.py    # SQLAlchemy engine + TimescaleDB hypertable setup
 │   │   ├── models.py      # devices, ping_history, alerts, bandwidth_logs
 │   │   ├── security.py    # JWT auth (PBKDF2 password hashing)
-│   │   ├── scanner.py     # Scapy ARP scan → ping-sweep fallback
+│   │   ├── scanner.py     # Scapy ARP scan → ping-sweep fallback → ARP-cache merge
 │   │   ├── monitor.py     # psutil bandwidth sampler + optional protocol sniffer
 │   │   ├── events.py      # Redis pub/sub event bus (in-memory fallback)
 │   │   ├── services.py    # Scan/ping/bandwidth jobs, alert rules, payloads
@@ -122,8 +125,8 @@ Interactive docs: http://localhost:8000/docs
 
 | Job | Interval | Work |
 |-----|----------|------|
-| Scan | 30s | ARP/ping discovery, new-device alerts |
-| Ping | 30s | Status, latency, uptime %, latency/offline alerts |
+| Scan | 30s | ARP/ping + ARP-cache discovery, new-device alerts, stale-device cleanup |
+| Ping | 10s | Status, latency, uptime %, latency/offline alerts; ARP-entry fallback keeps ICMP-blocking devices "up" |
 | Bandwidth | 2s | Sample per-interface rates → `bandwidth_logs` |
 | Cleanup | daily 03:00 | Purge logs past retention window |
 
@@ -139,5 +142,5 @@ Interactive docs: http://localhost:8000/docs
 
 - The dashboard polls every 5s as a fallback and receives push updates via `/ws` for instant refreshes.
 - `network-monitor.html` is a self-contained static prototype of the same UI.
-- The backend seeds demo devices/alerts only when the database is empty (`DEMO_SEED_ENABLED=true`); set it to `false` for a strictly real-data system.
+- Demo seeding is disabled by default (`DEMO_SEED_ENABLED=false`), so the dashboard only ever shows devices found by real scans.
 - All passwords/credentials are LAN-demo defaults — change `DEMO_PASSWORD` and `SECRET_KEY` for anything real.

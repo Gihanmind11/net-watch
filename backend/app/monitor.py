@@ -102,7 +102,11 @@ class ProtocolMonitor:
         if not self.enabled:
             return
         try:
-            from scapy.all import sniff  # noqa: F401
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Diffie-Hellman over finite fields .*")
+                from scapy.all import sniff  # noqa: F401
         except Exception:
             self.enabled = False
             return
@@ -114,7 +118,11 @@ class ProtocolMonitor:
 
     def _run(self) -> None:
         try:
-            from scapy.all import sniff
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Diffie-Hellman over finite fields .*")
+                from scapy.all import sniff
 
             sniff(prn=self._count, store=False, stop_filter=lambda _p: self._stop.is_set())
         except Exception:
@@ -127,7 +135,11 @@ class ProtocolMonitor:
     @staticmethod
     def _classify(packet) -> str:
         try:
-            from scapy.all import ARP, ICMP, IP, TCP, UDP
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Diffie-Hellman over finite fields .*")
+                from scapy.all import ARP, ICMP, IP, TCP, UDP
         except Exception:
             return "OTHER"
         if packet.haslayer(ARP):
