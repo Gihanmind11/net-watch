@@ -1,4 +1,4 @@
-import type { AlertResponse, Device, LoginResponse, NetworkInterface, ScanResult, Stats, TopologyData } from './types'
+import type { AlertResponse, Device, LoginResponse, NetworkInterface, ScanResult, Stats, TopologyData, WifiInfo } from './types'
 
 const API_BASE = '/api'
 
@@ -31,6 +31,8 @@ export const logout = async (): Promise<void> => {
 }
 
 export const getStats = () => http<Stats>('/stats')
+
+export const getWifi = () => http<WifiInfo>('/wifi')
 
 export const getDevices = () => http<{ devices: Device[] }>('/devices')
 

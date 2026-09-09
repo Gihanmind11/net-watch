@@ -86,6 +86,24 @@ export interface ScanResult {
   timestamp: string;
 }
 
+export interface WifiInfo {
+  connected: boolean;
+  state: string;
+  ssid: string;
+  bssid: string;
+  signal: number;
+  channel: string;
+  radio_type: string;
+  authentication: string;
+  rx_rate: string;
+  tx_rate: string;
+  visible_networks: number;
+  hotspot_active: boolean;
+  hotspot_clients: number;
+  note?: string;
+  connection_type?: string;
+}
+
 export interface AlertResponse {
   count: number;
   alerts: Alert[];
