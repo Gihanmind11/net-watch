@@ -49,10 +49,23 @@ async def publish(event_type: str, payload: dict) -> None:
 
 # ---------------- payload builders ----------------
 
+def display_name(device: models.Device) -> str:
+    """Device name for the DEVICE NAME column.
+
+    Use the real reverse-DNS hostname when the device returns one; otherwise
+    show the IP address (routers, phones and IoT devices often have no PTR
+    record, and a bare IP is clearer than a made-up label).
+    """
+    hostname = (device.hostname or "").strip()
+    if hostname and hostname != device.ip_address:
+        return hostname
+    return device.ip_address or "Unknown device"
+
+
 def device_payload(device: models.Device) -> dict:
     return {
         "id": device.id,
-        "device_name": device.hostname or device.ip_address,
+        "device_name": display_name(device),
         "hostname": device.hostname or device.ip_address,
         "ip": device.ip_address,
         "mac": device.mac_address or "",
@@ -263,7 +276,9 @@ def _upsert_device(db, entry: dict):
         device = models.Device(
             ip_address=entry["ip"],
             mac_address=entry.get("mac") or "",
-            hostname=entry.get("hostname") or entry["ip"],
+            # Never store the raw IP as the hostname: an empty value lets a
+            # later scan fill in the real reverse-DNS name.
+            hostname=entry.get("hostname") or "",
             device_type=entry.get("device_type") or "",
             os_guess=entry.get("os") or "",
             vendor=entry.get("vendor") or "",
@@ -275,7 +290,9 @@ def _upsert_device(db, entry: dict):
     else:
         if not device.mac_address and entry.get("mac"):
             device.mac_address = entry["mac"]
-        if not device.hostname and entry.get("hostname"):
+        # Fill in a real hostname when DNS resolves it, replacing an earlier
+        # empty value or an IP that was stored as a stand-in name.
+        if entry.get("hostname") and (not device.hostname or device.hostname == entry["ip"]):
             device.hostname = entry["hostname"]
         if not device.vendor and entry.get("vendor"):
             device.vendor = entry["vendor"]
@@ -316,7 +333,7 @@ async def run_scan() -> dict:
                 db.add(
                     models.Alert(
                         level="new",
-                        message=f"{device.hostname or device.ip_address} ({device.ip_address}) — New device joined network",
+                        message=f"{display_name(device)} ({device.ip_address}) — New device joined network",
                         device_ip=device.ip_address,
                     )
                 )
@@ -403,7 +420,7 @@ async def run_ping_cycle() -> None:
                         db.add(
                             models.Alert(
                                 level="info",
-                                message=f"{live.hostname} ({live.ip_address}) — Device recovered",
+                                message=f"{display_name(live)} ({live.ip_address}) — Device recovered",
                                 device_ip=live.ip_address,
                             )
                         )
@@ -419,7 +436,7 @@ async def run_ping_cycle() -> None:
                     db.add(
                         models.Alert(
                             level="crit",
-                            message=f"{live.hostname} ({live.ip_address}) — Host unreachable: {live.fail_count} consecutive failures",
+                            message=f"{display_name(live)} ({live.ip_address}) — Host unreachable: {live.fail_count} consecutive failures",
                             device_ip=live.ip_address,
                         )
                     )
@@ -434,7 +451,7 @@ async def run_ping_cycle() -> None:
                     db.add(
                         models.Alert(
                             level="info",
-                            message=f"{live.hostname} ({live.ip_address}) — Device recovered",
+                            message=f"{display_name(live)} ({live.ip_address}) — Device recovered",
                             device_ip=live.ip_address,
                         )
                     )
@@ -444,7 +461,7 @@ async def run_ping_cycle() -> None:
                         db.add(
                             models.Alert(
                                 level="crit",
-                                message=f"{live.hostname} ({live.ip_address}) — High latency: {ms:.0f}ms (threshold: {settings.latency_crit_ms}ms)",
+                                message=f"{display_name(live)} ({live.ip_address}) — High latency: {ms:.0f}ms (threshold: {settings.latency_crit_ms}ms)",
                                 device_ip=live.ip_address,
                             )
                         )
@@ -454,7 +471,7 @@ async def run_ping_cycle() -> None:
                         db.add(
                             models.Alert(
                                 level="warn",
-                                message=f"{live.hostname} ({live.ip_address}) — Latency spike: {ms:.0f}ms detected (threshold: {settings.latency_warn_ms}ms)",
+                                message=f"{display_name(live)} ({live.ip_address}) — Latency spike: {ms:.0f}ms detected (threshold: {settings.latency_warn_ms}ms)",
                                 device_ip=live.ip_address,
                             )
                         )

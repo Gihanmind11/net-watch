@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { Device } from '../types'
-import { getDevices, resetDevices } from '../api'
+import { getDevices } from '../api'
 import StatusBadge from '../components/StatusBadge'
 import PingBar from '../components/PingBar'
 
@@ -25,32 +25,14 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
     }
   }, [scanVersion])
 
-  const [resetting, setResetting] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
-
-  const handleRefresh = async () => {
-    setRefreshing(true)
-    try {
-      const d = await getDevices()
-      setDevices(d.devices || [])
-    } catch { /* ignore */ }
-    setRefreshing(false)
-  }
-
-  const handleReset = async () => {
-    if (!confirm('Clear all discovered devices?')) return
-    setResetting(true)
-    try {
-      await resetDevices()
-      setDevices([])
-    } catch { /* ignore */ }
-    setResetting(false)
-  }
-
+  // IP search is prefix-based: a full IP matches that device, and a partial
+  // IP lists every device in the range (e.g. "192.168.8.1" also shows
+  // "192.168.8.101"). Name/MAC keep partial substring matching.
+  const q = search.trim().toLowerCase()
   const filtered = devices.filter(d =>
-    d.device_name.toLowerCase().includes(search.toLowerCase()) ||
-    d.ip.includes(search) ||
-    d.mac.toLowerCase().includes(search.toLowerCase())
+    d.device_name.toLowerCase().includes(q) ||
+    d.ip.startsWith(q) ||
+    d.mac.toLowerCase().includes(q)
   )
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
@@ -78,27 +60,6 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
         <div className="flex items-center justify-between px-[18px] py-3.5 border-b border-border-noc bg-panel2">
           <div className="flex items-center gap-3">
             <div className="font-display font-bold text-sm tracking-[1px] text-accent">All Discovered Hosts</div>
-            <button
-              onClick={handleRefresh}
-              disabled={refreshing}
-              className={`flex items-center gap-1.5 px-3 py-1.5 bg-accent/10 border border-accent/30 rounded-md text-accent text-[11px] font-mono-noc tracking-[1px] cursor-pointer transition-all hover:bg-accent/20 hover:border-accent/50 ${refreshing ? 'opacity-60' : ''}`}
-              title="Refresh device list"
-            >
-              <svg className={refreshing ? 'animate-spin' : ''} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-              </svg>
-              REFRESH
-            </button>
-            <button
-              onClick={handleReset}
-              disabled={resetting || devices.length === 0}
-              className={`flex items-center gap-1.5 px-3 py-1.5 bg-[#ff3355]/10 border border-[#ff3355]/30 rounded-md text-[#ff3355] text-[11px] font-mono-noc tracking-[1px] cursor-pointer transition-all hover:bg-[#ff3355]/20 hover:border-[#ff3355]/50 ${(resetting || devices.length === 0) ? 'opacity-40 cursor-not-allowed' : ''}`}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-              </svg>
-              RESET
-            </button>
           </div>
           <input
             className="bg-bg-noc border border-border-noc text-text-noc px-3 py-1.5 rounded text-[13px] font-body w-[220px] focus:outline-none focus:border-accent"
@@ -114,7 +75,7 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                {['#', 'DEVICE NAME', 'IP ADDRESS', 'MAC ADDRESS', 'VENDOR', 'TYPE', 'OS', 'STATUS', 'OPEN PORTS', 'LATENCY', 'UPTIME', 'FIRST CONNECTED'].map(h => (
+                {['#', 'DEVICE NAME', 'IP ADDRESS', 'MAC ADDRESS', 'TYPE', 'OS', 'STATUS', 'OPEN PORTS', 'LATENCY', 'UPTIME', 'FIRST CONNECTED'].map(h => (
                   <th key={h} className="text-[10px] tracking-[2px] text-muted text-left px-3 py-2 border-b border-border-noc font-mono-noc">{h}</th>
                 ))}
               </tr>
@@ -131,7 +92,6 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
                   </td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 font-mono-noc text-xs text-muted">{d.ip}</td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 font-mono-noc text-xs text-muted">{d.mac}</td>
-                  <td className="px-3 py-2.5 border-b border-border-noc/40 text-xs text-muted">{d.vendor || '—'}</td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 text-muted text-xs">{d.type}</td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40 text-xs">{d.os}</td>
                   <td className="px-3 py-2.5 border-b border-border-noc/40"><StatusBadge status={d.status} /></td>
@@ -152,7 +112,7 @@ export default function DevicesPage({ scanVersion, token }: { scanVersion?: numb
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={12} className="text-center text-muted p-[30px] text-[13px]">
+                <tr><td colSpan={11} className="text-center text-muted p-[30px] text-[13px]">
                   {devices.length === 0 ? 'No devices discovered yet. The scanner runs every 30s — wireless clients appear here automatically.' : 'No devices match your search.'}
                 </td></tr>
               )}
