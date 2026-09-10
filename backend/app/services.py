@@ -11,12 +11,14 @@ from .config import get_settings
 from .database import SessionLocal
 from .events import get_broker
 from .monitor import BandwidthSampler, ProtocolMonitor
-from .scanner import arp_table, get_default_gateway, get_network_cidr, ping_host, run_discovery, usable_unicast_mac
+from .scanner import arp_probe, get_default_gateway, get_network_cidr, ping_host, run_discovery
+from .snmp import LanTrafficSampler
 
 settings = get_settings()
 
 bandwidth_sampler = BandwidthSampler()
 protocol_monitor = ProtocolMonitor(settings.sniffing_enabled)
+lan_traffic = LanTrafficSampler()
 
 _gateway_cache: dict[str, float] = {"ip": "", "ts": 0.0}
 _GATEWAY_CACHE_TTL = 30.0
@@ -47,10 +49,23 @@ async def publish(event_type: str, payload: dict) -> None:
 
 # ---------------- payload builders ----------------
 
+def display_name(device: models.Device) -> str:
+    """Device name for the DEVICE NAME column.
+
+    Use the real reverse-DNS hostname when the device returns one; otherwise
+    show the IP address (routers, phones and IoT devices often have no PTR
+    record, and a bare IP is clearer than a made-up label).
+    """
+    hostname = (device.hostname or "").strip()
+    if hostname and hostname != device.ip_address:
+        return hostname
+    return device.ip_address or "Unknown device"
+
+
 def device_payload(device: models.Device) -> dict:
     return {
         "id": device.id,
-        "device_name": device.hostname or device.ip_address,
+        "device_name": display_name(device),
         "hostname": device.hostname or device.ip_address,
         "ip": device.ip_address,
         "mac": device.mac_address or "",
@@ -157,7 +172,7 @@ def bandwidth_payload() -> dict:
         }
         for r in reversed(rows)
     ]
-    return {"current": current, "history": history, "protocols": protocol_monitor.stats()}
+    return {"current": current, "history": history, "protocols": protocol_monitor.stats(), "lan": lan_traffic.last_snapshot()}
 
 
 def interfaces_payload() -> dict:
@@ -183,7 +198,27 @@ def top_talkers_payload() -> dict:
 
 
 _CORE_TYPES = {"Router", "Firewall", "Switch", "Access Point"}
-_TYPE_MAP = {"Router": "router", "Firewall": "firewall", "Switch": "switch", "Access Point": "ap", "Server": "server"}
+# Device-type normalization used by the topology payload. Each value maps to a
+# distinct icon rendered by the frontend topology map (Packet Tracer style).
+_TYPE_MAP = {
+    "Gateway": "router",
+    "Router": "router",
+    "Firewall": "firewall",
+    "Switch": "switch",
+    "Network device": "switch",
+    "Access Point": "ap",
+    "Server": "server",
+    "NAS": "nas",
+    "Printer": "printer",
+    "Camera": "camera",
+    "VoIP": "voip",
+    "Phone": "phone",
+    "Tablet": "tablet",
+    "Mobile/Tablet": "mobile",
+    "Computer": "pc",
+    "PC": "pc",
+    "Laptop": "laptop",
+}
 
 
 def topology_payload() -> dict:
@@ -261,10 +296,13 @@ def _upsert_device(db, entry: dict):
         device = models.Device(
             ip_address=entry["ip"],
             mac_address=entry.get("mac") or "",
-            hostname=entry.get("hostname") or entry["ip"],
+            # Never store the raw IP as the hostname: an empty value lets a
+            # later scan fill in the real reverse-DNS name.
+            hostname=entry.get("hostname") or "",
             device_type=entry.get("device_type") or "",
             os_guess=entry.get("os") or "",
             vendor=entry.get("vendor") or "",
+            open_ports=entry.get("open_ports") or "",
             status=status,
             first_seen=utcnow(),
             last_seen=utcnow(),
@@ -273,15 +311,23 @@ def _upsert_device(db, entry: dict):
     else:
         if not device.mac_address and entry.get("mac"):
             device.mac_address = entry["mac"]
-        if not device.hostname and entry.get("hostname"):
+        # Fill in a real hostname when DNS resolves it, replacing an earlier
+        # empty value or an IP that was stored as a stand-in name.
+        if entry.get("hostname") and (not device.hostname or device.hostname == entry["ip"]):
             device.hostname = entry["hostname"]
         if not device.vendor and entry.get("vendor"):
             device.vendor = entry["vendor"]
-        # Always refresh type/OS from the latest discovery: an earlier scan may
-        # have stored a wrong guess (e.g. a Windows box misread as Android via
-        # a TTL-64 probe) and it must be corrected, not kept forever.
-        if entry.get("device_type"):
-            device.device_type = entry["device_type"]
+        # Refresh ports only when the scan actually probed the host; a sleeping
+        # host has no "open_ports" key, so its last known ports are kept.
+        if "open_ports" in entry:
+            device.open_ports = entry["open_ports"] or ""
+        # Refresh type/OS from the latest discovery, but never downgrade a
+        # specific guess (e.g. "Mobile/Tablet" from a TTL probe) to the generic
+        # "Device" bucket: a scan where the host ignored ICMP yields no type
+        # evidence and used to flap the classification back to "Device".
+        incoming_type = (entry.get("device_type") or "").strip()
+        if incoming_type and not (incoming_type == "Device" and device.device_type and device.device_type != "Device"):
+            device.device_type = incoming_type
         if entry.get("os"):
             device.os_guess = entry["os"]
         if status == "up" and device.status in ("unknown", "down"):
@@ -314,7 +360,7 @@ async def run_scan() -> dict:
                 db.add(
                     models.Alert(
                         level="new",
-                        message=f"{device.hostname or device.ip_address} ({device.ip_address}) — New device joined network",
+                        message=f"{display_name(device)} ({device.ip_address}) — New device joined network",
                         device_ip=device.ip_address,
                     )
                 )
@@ -356,11 +402,12 @@ async def run_scan() -> dict:
 async def run_ping_cycle() -> None:
     """Ping every known device, update status/uptime, raise latency & offline alerts.
 
-    When ICMP fails, the system ARP table is consulted: many real devices
-    (phones, printers, IoT) silently drop ping probes while remaining
-    connected at Layer 2. A fresh unicast MAC entry counts as evidence of
-    connectivity, so the device is kept "up" (with the last known latency)
-    instead of being flapped to "down".
+    When ICMP fails, a live ARP request is sent: many real devices (phones,
+    printers, IoT) silently drop ping probes while remaining connected at
+    Layer 2. An ARP reply counts as fresh evidence of connectivity, so the
+    device is kept "up" (with the last known latency) instead of being
+    flapped to "down". A device that answers neither ICMP nor ARP is marked
+    offline on the very next cycle.
     """
     with SessionLocal() as db:
         devices = db.scalars(select(models.Device)).all()
@@ -378,9 +425,20 @@ async def run_ping_cycle() -> None:
     results = await asyncio.gather(*(check(d) for d in devices))
     now = utcnow()
 
-    # One ARP read per cycle (cheap) to arbitrate ICMP failures.
-    need_arp = any(reply is None for _d, reply in results)
-    arp_cache = arp_table() if need_arp else {}
+    # Live ARP probe for every host that ignored ICMP. Unlike the system ARP
+    # cache (whose entries linger minutes after a client leaves), a reply to a
+    # broadcast ARP request is proof the host answers right now — a phone with
+    # WiFi switched off no longer stays "up" on a stale cache entry.
+    need_probe = [_d for _d, reply in results if reply is None]
+    probe_ok: dict[str, bool] = {}
+
+    async def arp_probe_check(device: models.Device) -> tuple[str, bool]:
+        async with sem:
+            return device.ip_address, await asyncio.to_thread(arp_probe, device.ip_address)
+
+    if need_probe:
+        probed = await asyncio.gather(*(arp_probe_check(d) for d in need_probe))
+        probe_ok = dict(probed)
 
     with SessionLocal() as db:
         history: list[models.PingHistory] = []
@@ -388,36 +446,34 @@ async def run_ping_cycle() -> None:
             live = db.get(models.Device, device.id)
             if live is None:
                 continue
-            if reply is None and arp_cache:
-                mac = arp_cache.get(live.ip_address, "")
-                if usable_unicast_mac(mac):
-                    # L2-reachable (ping-blocked device): keep alive without
-                    # inventing a fake latency value.
-                    live.total_checks += 1
-                    live.total_ups += 1
-                    live.fail_count = 0
-                    if live.status == "down":
-                        live.status = "up"
-                        db.add(
-                            models.Alert(
-                                level="info",
-                                message=f"{live.hostname} ({live.ip_address}) — Device recovered",
-                                device_ip=live.ip_address,
-                            )
+            if reply is None and probe_ok.get(live.ip_address):
+                # L2-reachable right now (ping-blocked device): keep alive
+                # without inventing a fake latency value.
+                live.total_checks += 1
+                live.total_ups += 1
+                live.fail_count = 0
+                if live.status == "down":
+                    live.status = "up"
+                    db.add(
+                        models.Alert(
+                            level="info",
+                            message=f"{display_name(live)} ({live.ip_address}) — Device recovered",
+                            device_ip=live.ip_address,
                         )
-                    history.append(models.PingHistory(device_id=live.id, ping_ms=live.ping_ms or 0.0, status=live.status, checked_at=now))
-                    live.last_seen = now
-                    continue
+                    )
+                history.append(models.PingHistory(device_id=live.id, ping_ms=live.ping_ms or 0.0, status=live.status, checked_at=now))
+                live.last_seen = now
+                continue
             live.total_checks += 1
             if reply is None:
                 live.fail_count += 1
                 live.ping_ms = 0.0
-                if live.fail_count >= settings.ping_fail_count and live.status != "down":
+                if live.status != "down":
                     live.status = "down"
                     db.add(
                         models.Alert(
                             level="crit",
-                            message=f"{live.hostname} ({live.ip_address}) — Host unreachable: {live.fail_count} consecutive failures",
+                            message=f"{display_name(live)} ({live.ip_address}) — Host unreachable",
                             device_ip=live.ip_address,
                         )
                     )
@@ -432,7 +488,7 @@ async def run_ping_cycle() -> None:
                     db.add(
                         models.Alert(
                             level="info",
-                            message=f"{live.hostname} ({live.ip_address}) — Device recovered",
+                            message=f"{display_name(live)} ({live.ip_address}) — Device recovered",
                             device_ip=live.ip_address,
                         )
                     )
@@ -442,7 +498,7 @@ async def run_ping_cycle() -> None:
                         db.add(
                             models.Alert(
                                 level="crit",
-                                message=f"{live.hostname} ({live.ip_address}) — High latency: {ms:.0f}ms (threshold: {settings.latency_crit_ms}ms)",
+                                message=f"{display_name(live)} ({live.ip_address}) — High latency: {ms:.0f}ms (threshold: {settings.latency_crit_ms}ms)",
                                 device_ip=live.ip_address,
                             )
                         )
@@ -452,7 +508,7 @@ async def run_ping_cycle() -> None:
                         db.add(
                             models.Alert(
                                 level="warn",
-                                message=f"{live.hostname} ({live.ip_address}) — Latency spike: {ms:.0f}ms detected (threshold: {settings.latency_warn_ms}ms)",
+                                message=f"{display_name(live)} ({live.ip_address}) — Latency spike: {ms:.0f}ms detected (threshold: {settings.latency_warn_ms}ms)",
                                 device_ip=live.ip_address,
                             )
                         )
@@ -484,6 +540,17 @@ async def run_bandwidth_cycle() -> None:
             for s in snapshots
         )
         db.commit()
+    await publish("bandwidth", bandwidth_payload())
+
+
+async def run_lan_traffic_cycle() -> None:
+    """Poll the gateway's SNMP counters for whole-LAN traffic.
+
+    Runs off the request path (blocking UDP in a worker thread). When the
+    router does not answer, the sampler enters a cooldown and the dashboard
+    falls back to this host's per-interface counters.
+    """
+    await asyncio.to_thread(lan_traffic.sample, settings.snmp_host or current_gateway())
     await publish("bandwidth", bandwidth_payload())
 
 

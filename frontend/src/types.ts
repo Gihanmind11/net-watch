@@ -56,6 +56,8 @@ export interface NetworkInterface {
   total_out: number;
   errors: number;
   status: 'UP' | 'DOWN';
+  wifi_rx_mbps?: number | null;
+  wifi_tx_mbps?: number | null;
 }
 
 export interface Talker {
@@ -84,6 +86,24 @@ export interface ScanResult {
   new_devices: number;
   scan_duration_ms: number;
   timestamp: string;
+}
+
+export interface WifiInfo {
+  connected: boolean;
+  state: string;
+  ssid: string;
+  bssid: string;
+  signal: number;
+  channel: string;
+  radio_type: string;
+  authentication: string;
+  rx_rate: string;
+  tx_rate: string;
+  visible_networks: number;
+  hotspot_active: boolean;
+  hotspot_clients: number;
+  note?: string;
+  connection_type?: string;
 }
 
 export interface AlertResponse {

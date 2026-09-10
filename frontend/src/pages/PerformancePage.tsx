@@ -36,7 +36,13 @@ export default function PerformancePage() {
         {interfaces.map(iface => (
           <div key={iface.name} className="bg-panel2 border border-border-noc rounded-lg p-3.5 transition-[border-color] hover:border-accent">
             <div className="font-mono-noc text-[13px] text-accent mb-2">{iface.name}</div>
-            <div className="text-xs text-muted my-[3px]">Speed: <b className="text-text-noc">{iface.speed}</b></div>
+            {iface.wifi_rx_mbps != null && iface.wifi_tx_mbps != null ? (
+              <div className="text-xs text-muted my-[3px]">
+                WiFi Link: <b className="text-text-noc">{'\u2193'} {iface.wifi_rx_mbps.toFixed(0)} / {'\u2191'} {iface.wifi_tx_mbps.toFixed(0)} Mbps</b>
+              </div>
+            ) : (
+              <div className="text-xs text-muted my-[3px]">Speed: <b className="text-text-noc">{iface.speed}</b></div>
+            )}
             <div className="text-xs text-muted my-[3px]">{'\u2191'} In: <b className="text-accent">{formatBytes(iface.total_in)}</b></div>
             <div className="text-xs text-muted my-[3px]">{'\u2193'} Out: <b className="text-accent2">{formatBytes(iface.total_out)}</b></div>
             <div className="text-xs text-muted my-[3px]">Errors: <b className={iface.errors === 0 ? 'text-accent2' : 'text-danger'}>{iface.errors}</b></div>

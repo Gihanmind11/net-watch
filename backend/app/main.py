@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import services
-from .api import alerts, auth, bandwidth, devices, scan, stats, topology, ws
+from .api import alerts, auth, bandwidth, devices, scan, stats, topology, wifi, ws
 from .config import get_settings
 from .database import init_db
 from .events import init_broker
@@ -50,5 +50,6 @@ for router in (
     stats.router,
     scan.router,
     ws.router,
+    wifi.router,
 ):
     app.include_router(router)
