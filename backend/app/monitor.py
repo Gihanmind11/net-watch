@@ -1,5 +1,7 @@
 """Interface bandwidth sampling (psutil) and optional protocol sniffing (Scapy)."""
 
+import platform
+import subprocess
 import threading
 import time
 
@@ -8,6 +10,60 @@ import psutil
 from .config import get_settings
 
 settings = get_settings()
+
+# `netsh` spawns a process, so cache its result briefly: the interfaces
+# endpoint is polled and the negotiated rate rarely changes second-to-second.
+_WIFI_RATES_TTL = 3.0
+_wifi_rates_cache: dict[str, dict[str, float]] = {}
+_wifi_rates_ts = float("-inf")
+
+
+def wifi_link_rates() -> dict[str, dict[str, float]]:
+    """Live WiFi link rates (Mbps) keyed by adapter name.
+
+    psutil's `net_if_stats().speed` is a driver-reported nominal figure — often
+    `0` for WiFi adapters and never the rate actually negotiated right now.
+    `netsh wlan show interfaces` (Windows) reports the real RX/TX link rates,
+    so we parse those instead. Returns `{}` off-Windows or when no wireless
+    adapter is present.
+    """
+    global _wifi_rates_cache, _wifi_rates_ts
+    now = time.monotonic()
+    if now - _wifi_rates_ts < _WIFI_RATES_TTL:
+        return _wifi_rates_cache
+    if platform.system().lower() != "windows":
+        return {}
+    try:
+        proc = subprocess.run(
+            ["netsh", "wlan", "show", "interfaces"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return _wifi_rates_cache
+
+    rates: dict[str, dict[str, float]] = {}
+    name = ""
+    current: dict[str, float] = {}
+    for raw in proc.stdout.splitlines():
+        key, sep, value = raw.partition(":")
+        if not sep:
+            continue
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "name":
+            name = value
+            current = {}
+        elif name and key in ("receive rate (mbps)", "transmit rate (mbps)"):
+            try:
+                current["receive_rate" if key.startswith("receive") else "transmit_rate"] = float(value.split()[0])
+            except (ValueError, IndexError):
+                continue
+            rates[name] = current
+    _wifi_rates_cache = rates
+    _wifi_rates_ts = now
+    return rates
 
 
 class BandwidthSampler:
@@ -68,15 +124,25 @@ class BandwidthSampler:
     def interface_details(self) -> list[dict]:
         counters = psutil.net_io_counters(pernic=True)
         stats = psutil.net_if_stats()
+        rates = wifi_link_rates()
         out = []
         for name, counter in counters.items():
             st = stats.get(name)
             speed = getattr(st, "speed", 0) or 0
-            speed_label = f"{speed // 1000} Gbps" if speed >= 1000 else f"{speed} Mbps"
+            rx = rates.get(name, {}).get("receive_rate")
+            tx = rates.get(name, {}).get("transmit_rate")
+            if rx and tx:
+                # Real negotiated WiFi link rate (RX/TX), far more honest than
+                # the driver's nominal `speed`, which is 0 for many adapters.
+                speed_label = f"{rx:.0f}/{tx:.0f} Mbps"
+            else:
+                speed_label = f"{speed // 1000} Gbps" if speed >= 1000 else f"{speed} Mbps"
             out.append(
                 {
                     "name": name,
                     "speed": speed_label,
+                    "wifi_rx_mbps": rx,
+                    "wifi_tx_mbps": tx,
                     "total_in": counter.bytes_recv,
                     "total_out": counter.bytes_sent,
                     "errors": counter.errin + counter.errout,

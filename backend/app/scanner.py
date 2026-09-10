@@ -238,6 +238,19 @@ def usable_unicast_mac(mac: str) -> bool:
     return mac != "00:00:00:00:00:00"
 
 
+def randomized_mac(mac: str) -> bool:
+    """True when the MAC is locally administered — i.e. a per-network
+    randomized address. Phones/tablets randomize their WiFi MAC by default
+    (Android/iOS), so this is strong evidence of a mobile client whenever no
+    other fingerprint (TTL/vendor/hostname) is available."""
+    if not usable_unicast_mac(mac):
+        return False
+    try:
+        return bool(int(mac[:2], 16) & 0x02)  # locally administered bit
+    except ValueError:
+        return False
+
+
 def arp_cache_hosts(cidr: str, table: dict[str, str] | None = None) -> list[dict]:
     """Devices from the system ARP cache filtered to `cidr`.
 
@@ -279,6 +292,24 @@ def arp_scan(cidr: str, timeout: float = 3.0) -> list[dict]:
         return [{"ip": recv.psrc, "mac": recv.hwsrc} for _sent, recv in answered]
     except Exception:
         return []
+
+
+def arp_probe(ip: str, timeout: float = 1.5) -> bool:
+    """Live ARP request for one IP: True only if the host answers right now.
+
+    This replaces the system ARP cache as liveness evidence in the ping
+    cycle. Cache entries linger for minutes after a client leaves the network
+    (e.g. a phone with WiFi switched off), which used to keep devices "up"
+    long after they were gone. An ARP reply, by contrast, is fresh proof the
+    host is reachable at Layer 2.
+    """
+    if not HAVE_SCAPY:
+        return False
+    try:
+        answered, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip), timeout=timeout, verbose=0)
+        return any(recv.psrc == ip and usable_unicast_mac(recv.hwsrc) for _sent, recv in answered)
+    except Exception:
+        return False
 
 
 def _run_ping(ip: str, timeout_ms: int = 1000) -> bool:
@@ -396,6 +427,12 @@ def classify_device(
         return "Computer"
     if "print" in name or vendor in ("Hewlett Packard",):
         return "Printer"
+    if ttl is None and randomized_mac(mac):
+        # No ICMP/TTL evidence, but the host uses a randomized (locally
+        # administered) MAC — the default for phones/tablets, which also
+        # tend to ignore ICMP. Report it as a mobile client instead of the
+        # generic "Device" bucket.
+        return "Mobile/Tablet"
     if ttl is None:
         return "Device"
     if ttl == 255:
@@ -448,6 +485,28 @@ def ping_host(ip: str, timeout_ms: int = 1000, dst_mac: str = "") -> tuple[float
         return None
 
 
+def scan_ports(ip: str, ports: list[int] | None = None, timeout: float | None = None) -> str:
+    """TCP connect-scan one host; return open ports as "80,443,22"-style text.
+
+    `connect_ex` completes a full TCP handshake, so it needs no raw-socket
+    privileges (unlike a SYN scan) and works on Windows without Npcap. A single
+    short timeout per port bounds hosts that silently drop packets instead of
+    sending RST.
+    """
+    ports = ports if ports is not None else settings.port_scan_port_list
+    timeout = timeout if timeout is not None else settings.port_scan_timeout_sec
+    opened: list[int] = []
+    for port in ports:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
+                if sock.connect_ex((ip, port)) == 0:
+                    opened.append(port)
+        except OSError:
+            continue
+    return ",".join(str(p) for p in opened)
+
+
 def _enrich_entry(entry: dict, gateway: str, arp_cache: dict[str, str] | None = None) -> dict:
     """Fill hostname, real MAC, vendor, TTL, latency, type and OS for one host."""
     ip = entry["ip"]
@@ -470,6 +529,11 @@ def _enrich_entry(entry: dict, gateway: str, arp_cache: dict[str, str] | None = 
     entry["ttl"] = ttl
     entry["device_type"] = classify_device(ip, gateway, entry.get("mac") or "", entry["hostname"], ttl, entry["vendor"])
     entry["os"] = guess_os(ttl, entry["hostname"], entry["vendor"])
+    # Only reachable hosts are worth probing; setting the key only when a scan
+    # ran lets _upsert_device keep the last known ports for a host that is
+    # merely asleep instead of wiping them.
+    if settings.port_scan_enabled and entry.get("status") == "up":
+        entry["open_ports"] = scan_ports(ip)
     return entry
 
 

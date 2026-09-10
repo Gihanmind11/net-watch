@@ -11,7 +11,7 @@ from .config import get_settings
 from .database import SessionLocal
 from .events import get_broker
 from .monitor import BandwidthSampler, ProtocolMonitor
-from .scanner import arp_table, get_default_gateway, get_network_cidr, ping_host, run_discovery, usable_unicast_mac
+from .scanner import arp_probe, get_default_gateway, get_network_cidr, ping_host, run_discovery
 from .snmp import LanTrafficSampler
 
 settings = get_settings()
@@ -302,6 +302,7 @@ def _upsert_device(db, entry: dict):
             device_type=entry.get("device_type") or "",
             os_guess=entry.get("os") or "",
             vendor=entry.get("vendor") or "",
+            open_ports=entry.get("open_ports") or "",
             status=status,
             first_seen=utcnow(),
             last_seen=utcnow(),
@@ -316,11 +317,17 @@ def _upsert_device(db, entry: dict):
             device.hostname = entry["hostname"]
         if not device.vendor and entry.get("vendor"):
             device.vendor = entry["vendor"]
-        # Always refresh type/OS from the latest discovery: an earlier scan may
-        # have stored a wrong guess (e.g. a Windows box misread as Android via
-        # a TTL-64 probe) and it must be corrected, not kept forever.
-        if entry.get("device_type"):
-            device.device_type = entry["device_type"]
+        # Refresh ports only when the scan actually probed the host; a sleeping
+        # host has no "open_ports" key, so its last known ports are kept.
+        if "open_ports" in entry:
+            device.open_ports = entry["open_ports"] or ""
+        # Refresh type/OS from the latest discovery, but never downgrade a
+        # specific guess (e.g. "Mobile/Tablet" from a TTL probe) to the generic
+        # "Device" bucket: a scan where the host ignored ICMP yields no type
+        # evidence and used to flap the classification back to "Device".
+        incoming_type = (entry.get("device_type") or "").strip()
+        if incoming_type and not (incoming_type == "Device" and device.device_type and device.device_type != "Device"):
+            device.device_type = incoming_type
         if entry.get("os"):
             device.os_guess = entry["os"]
         if status == "up" and device.status in ("unknown", "down"):
@@ -395,11 +402,12 @@ async def run_scan() -> dict:
 async def run_ping_cycle() -> None:
     """Ping every known device, update status/uptime, raise latency & offline alerts.
 
-    When ICMP fails, the system ARP table is consulted: many real devices
-    (phones, printers, IoT) silently drop ping probes while remaining
-    connected at Layer 2. A fresh unicast MAC entry counts as evidence of
-    connectivity, so the device is kept "up" (with the last known latency)
-    instead of being flapped to "down".
+    When ICMP fails, a live ARP request is sent: many real devices (phones,
+    printers, IoT) silently drop ping probes while remaining connected at
+    Layer 2. An ARP reply counts as fresh evidence of connectivity, so the
+    device is kept "up" (with the last known latency) instead of being
+    flapped to "down". A device that answers neither ICMP nor ARP is marked
+    offline on the very next cycle.
     """
     with SessionLocal() as db:
         devices = db.scalars(select(models.Device)).all()
@@ -417,9 +425,20 @@ async def run_ping_cycle() -> None:
     results = await asyncio.gather(*(check(d) for d in devices))
     now = utcnow()
 
-    # One ARP read per cycle (cheap) to arbitrate ICMP failures.
-    need_arp = any(reply is None for _d, reply in results)
-    arp_cache = arp_table() if need_arp else {}
+    # Live ARP probe for every host that ignored ICMP. Unlike the system ARP
+    # cache (whose entries linger minutes after a client leaves), a reply to a
+    # broadcast ARP request is proof the host answers right now — a phone with
+    # WiFi switched off no longer stays "up" on a stale cache entry.
+    need_probe = [_d for _d, reply in results if reply is None]
+    probe_ok: dict[str, bool] = {}
+
+    async def arp_probe_check(device: models.Device) -> tuple[str, bool]:
+        async with sem:
+            return device.ip_address, await asyncio.to_thread(arp_probe, device.ip_address)
+
+    if need_probe:
+        probed = await asyncio.gather(*(arp_probe_check(d) for d in need_probe))
+        probe_ok = dict(probed)
 
     with SessionLocal() as db:
         history: list[models.PingHistory] = []
@@ -427,36 +446,34 @@ async def run_ping_cycle() -> None:
             live = db.get(models.Device, device.id)
             if live is None:
                 continue
-            if reply is None and arp_cache:
-                mac = arp_cache.get(live.ip_address, "")
-                if usable_unicast_mac(mac):
-                    # L2-reachable (ping-blocked device): keep alive without
-                    # inventing a fake latency value.
-                    live.total_checks += 1
-                    live.total_ups += 1
-                    live.fail_count = 0
-                    if live.status == "down":
-                        live.status = "up"
-                        db.add(
-                            models.Alert(
-                                level="info",
-                                message=f"{display_name(live)} ({live.ip_address}) — Device recovered",
-                                device_ip=live.ip_address,
-                            )
+            if reply is None and probe_ok.get(live.ip_address):
+                # L2-reachable right now (ping-blocked device): keep alive
+                # without inventing a fake latency value.
+                live.total_checks += 1
+                live.total_ups += 1
+                live.fail_count = 0
+                if live.status == "down":
+                    live.status = "up"
+                    db.add(
+                        models.Alert(
+                            level="info",
+                            message=f"{display_name(live)} ({live.ip_address}) — Device recovered",
+                            device_ip=live.ip_address,
                         )
-                    history.append(models.PingHistory(device_id=live.id, ping_ms=live.ping_ms or 0.0, status=live.status, checked_at=now))
-                    live.last_seen = now
-                    continue
+                    )
+                history.append(models.PingHistory(device_id=live.id, ping_ms=live.ping_ms or 0.0, status=live.status, checked_at=now))
+                live.last_seen = now
+                continue
             live.total_checks += 1
             if reply is None:
                 live.fail_count += 1
                 live.ping_ms = 0.0
-                if live.fail_count >= settings.ping_fail_count and live.status != "down":
+                if live.status != "down":
                     live.status = "down"
                     db.add(
                         models.Alert(
                             level="crit",
-                            message=f"{display_name(live)} ({live.ip_address}) — Host unreachable: {live.fail_count} consecutive failures",
+                            message=f"{display_name(live)} ({live.ip_address}) — Host unreachable",
                             device_ip=live.ip_address,
                         )
                     )

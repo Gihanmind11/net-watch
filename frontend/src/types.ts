@@ -56,6 +56,8 @@ export interface NetworkInterface {
   total_out: number;
   errors: number;
   status: 'UP' | 'DOWN';
+  wifi_rx_mbps?: number | null;
+  wifi_tx_mbps?: number | null;
 }
 
 export interface Talker {
