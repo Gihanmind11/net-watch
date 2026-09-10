@@ -198,7 +198,27 @@ def top_talkers_payload() -> dict:
 
 
 _CORE_TYPES = {"Router", "Firewall", "Switch", "Access Point"}
-_TYPE_MAP = {"Router": "router", "Firewall": "firewall", "Switch": "switch", "Access Point": "ap", "Server": "server"}
+# Device-type normalization used by the topology payload. Each value maps to a
+# distinct icon rendered by the frontend topology map (Packet Tracer style).
+_TYPE_MAP = {
+    "Gateway": "router",
+    "Router": "router",
+    "Firewall": "firewall",
+    "Switch": "switch",
+    "Network device": "switch",
+    "Access Point": "ap",
+    "Server": "server",
+    "NAS": "nas",
+    "Printer": "printer",
+    "Camera": "camera",
+    "VoIP": "voip",
+    "Phone": "phone",
+    "Tablet": "tablet",
+    "Mobile/Tablet": "mobile",
+    "Computer": "pc",
+    "PC": "pc",
+    "Laptop": "laptop",
+}
 
 
 def topology_payload() -> dict:
