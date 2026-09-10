@@ -35,7 +35,7 @@ export default function KpiCard({ label, value, sub, color, icon }: KpiCardProps
     <div className={`bg-panel border border-border-noc rounded-[10px] py-[18px] px-5 relative overflow-hidden transition-[border-color] hover:border-accent before:content-[''] before:absolute before:top-0 before:left-0 before:right-0 before:h-[2px] ${c.card}`}>
       <div className="text-[11px] tracking-[2px] text-muted uppercase mb-2 font-mono-noc">{label}</div>
       <div className={`font-display text-[36px] font-extrabold leading-none mb-1.5 ${c.value}`} style={{ textShadow: c.shadow }}>{value}</div>
-      <div className="text-xs text-muted">{sub}</div>
+      {sub ? <div className="text-xs text-muted">{sub}</div> : null}
       <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[36px] opacity-[0.08]">{icon}</div>
     </div>
   )

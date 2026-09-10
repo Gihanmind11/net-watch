@@ -67,6 +67,31 @@ networks (broadband routers) clients that ignore ICMP/ARP probes are still picke
 from the system ARP cache, and devices quiet for more than `STALE_DEVICE_GRACE_SEC`
 (default 300s) are dropped from the inventory.
 
+### Whole-LAN traffic (SNMP)
+
+A single host on a switched network only sees the frames on its own link, so the
+`Network Traffic (Mbps)` chart cannot measure the whole LAN from OS counters. The
+backend instead polls the router/gateway over SNMPv2c (`backend/app/snmp.py`) and
+converts its interface counter deltas (`ifInOctets`/`ifOutOctets`) into Mbps. The
+chart is labelled `LAN-WIDE` when this succeeds and `THIS HOST` when it falls back
+to local `psutil` counters.
+
+Enable SNMP on the router and set at least the community string:
+
+```bash
+SNMP_ENABLED=true        # default
+SNMP_HOST=               # empty → auto-detected default gateway
+SNMP_COMMUNITY=public
+SNMP_VERSION=2c          # "1" or "2c"
+SNMP_PORT=161
+SNMP_INTERFACE=          # empty → auto-pick the router's busiest interface
+SNMP_INTERVAL_SEC=5
+```
+
+If the router does not answer (SNMP off, wrong community, unsupported device) the
+sampler backs off for 5 minutes and the dashboard silently falls back to this
+host's traffic — no configuration is required to keep working.
+
 ## Project Structure
 
 ```
@@ -80,6 +105,7 @@ Network Monitoring System/
 │   │   ├── security.py    # JWT auth (PBKDF2 password hashing)
 │   │   ├── scanner.py     # Scapy ARP scan → ping-sweep fallback → ARP-cache merge
 │   │   ├── monitor.py     # psutil bandwidth sampler + optional protocol sniffer
+│   │   ├── snmp.py        # dependency-free SNMPv2c client + gateway LAN traffic sampler
 │   │   ├── events.py      # Redis pub/sub event bus (in-memory fallback)
 │   │   ├── services.py    # Scan/ping/bandwidth jobs, alert rules, payloads
 │   │   ├── scheduler.py   # APScheduler background jobs

@@ -37,6 +37,18 @@ class Settings(BaseSettings):
     max_concurrent_pings: int = 32
     sniffing_enabled: bool = False
 
+    # Whole-LAN traffic via SNMP polling of the router/gateway. When the router
+    # does not answer (SNMP disabled / wrong community / unsupported device) the
+    # dashboard silently falls back to this host's own counters.
+    snmp_enabled: bool = True
+    snmp_host: str = ""  # empty → poll the auto-detected default gateway
+    snmp_community: str = "public"
+    snmp_version: str = "2c"  # "1" or "2c"
+    snmp_port: int = 161
+    snmp_timeout_sec: float = 1.0
+    snmp_interface: str = ""  # empty → auto-pick the router's busiest interface
+    snmp_interval_sec: int = 5
+
     # Storage
     history_retention_days: int = 30
     demo_seed_enabled: bool = False

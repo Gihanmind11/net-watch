@@ -54,6 +54,7 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
   const [trafficData, setTrafficData] = useState<TrafficPoint[]>([])
   const [netLoad, setNetLoad] = useState(0)
   const [bwPct, setBwPct] = useState(0)
+  const [lanLabel, setLanLabel] = useState('') // '' → chart shows this host's traffic
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
@@ -86,15 +87,26 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
       getBandwidth()
         .then(data => {
           const current = data.current || {}
+          const lan = data.lan && data.lan.available && !data.lan.warming_up ? data.lan : null
           let totalIn = 0
           let totalOut = 0
-          let totalSpeed = 0
-          let maxUtil = 0
-          for (const iface of Object.values(current) as Array<{ mbps_in?: number; mbps_out?: number; speed_mbps?: number; utilization?: number }>) {
-            totalIn += iface.mbps_in || 0
-            totalOut += iface.mbps_out || 0
-            totalSpeed += iface.speed_mbps || 0
-            maxUtil = Math.max(maxUtil, iface.utilization || 0)
+          let hostLoad = 0 // busiest link on this machine (%) — backend utilization
+          let lanLoad = 0  // whole-LAN utilization from the router (%)
+          for (const iface of Object.values(current) as Array<{ mbps_in?: number; mbps_out?: number; utilization?: number }>) {
+            if (!lan) {
+              totalIn += iface.mbps_in || 0
+              totalOut += iface.mbps_out || 0
+            }
+            hostLoad = Math.max(hostLoad, iface.utilization || 0)
+          }
+          if (lan) {
+            // Whole-LAN traffic polled from the router via SNMP.
+            totalIn = lan.mbps_in || 0
+            totalOut = lan.mbps_out || 0
+            lanLoad = lan.utilization || 0
+            setLanLabel(lan.interface ? `${lan.gateway || 'router'} · ${lan.interface}` : (lan.gateway || 'router'))
+          } else {
+            setLanLabel('')
           }
           const now = new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
           setTrafficData(prev => {
@@ -102,9 +114,8 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
             if (next.length > 30) next.shift()
             return next
           })
-          const netLoadPct = totalSpeed > 0 ? (totalIn + totalOut) / totalSpeed * 100 : 0
-          setNetLoad(Math.round(Math.min(Math.max(netLoadPct, 0), 100)))
-          setBwPct(Math.round(Math.min(Math.max(maxUtil, 0), 100)))
+          setNetLoad(Math.round(Math.min(Math.max(hostLoad, 0), 100)))
+          setBwPct(Math.round(Math.min(Math.max(lanLoad || hostLoad, 0), 100)))
         })
         .catch(() => {})
     }
@@ -118,6 +129,10 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
     { name: 'Warning', value: stats.warning || 0, color: 'rgba(255,204,0,0.7)' },
     { name: 'Offline', value: stats.offline || 0, color: 'rgba(255,51,85,0.7)' },
   ]
+
+  // Non-Wi-Fi connection (ethernet, cellular, vpn, …): empty → wifi/no connection.
+  const nonWifiType = wifi.connection_type && wifi.connection_type !== 'wifi' ? wifi.connection_type : ''
+  const connLabel = nonWifiType ? (nonWifiType.toUpperCase() === 'VPN' ? 'VPN' : nonWifiType.charAt(0).toUpperCase() + nonWifiType.slice(1)) : ''
 
   return (
     <>
@@ -133,9 +148,9 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
       </div>
 
       <div className="grid grid-cols-4 gap-4 mb-6">
-        <KpiCard label="WiFi Signal" value={`${wifi.signal}%`} sub={wifi.ssid || (wifi.connection_type === 'ethernet' ? 'Wired connection' : 'No wireless adapter')} color="green" icon={'\u25B2'} />
-        <KpiCard label="Current SSID" value={wifi.ssid || (wifi.connection_type === 'ethernet' ? 'Ethernet' : '\u2014')} sub={wifi.connection_type === 'ethernet' ? 'Wired connection' : wifi.radio_type !== '\u2014' ? wifi.radio_type : wifi.note ? 'Limited by Windows' : 'Not connected'} color="blue" icon={'\u25C9'} />
-        <KpiCard label="Hotspot" value={wifi.hotspot_active ? 'ON' : 'OFF'} sub={`${wifi.hotspot_clients} clients connected`} color={wifi.hotspot_active ? 'orange' : 'red'} icon={'\u25CE'} />
+        <KpiCard label="Signal Strength" value={`${wifi.signal}%`} sub={wifi.ssid || (nonWifiType ? `${connLabel} connection` : 'No wireless adapter')} color="green" icon={'\u25B2'} />
+        <KpiCard label="Current SSID" value={wifi.ssid || (nonWifiType ? connLabel : '\u2014')} sub={nonWifiType ? `${connLabel} connection` : wifi.radio_type !== '\u2014' ? wifi.radio_type : wifi.note ? 'Limited by Windows' : 'Not connected'} color="blue" icon={'\u25C9'} />
+        <KpiCard label="Hotspot" value={wifi.hotspot_active ? 'ON' : 'OFF'} sub={wifi.hotspot_clients > 0 ? `${wifi.hotspot_clients} clients connected` : ''} color={wifi.hotspot_active ? 'orange' : 'red'} icon={'\u25CE'} />
         <KpiCard label="Connected Clients" value={stats.total_devices} sub={`${wifi.visible_networks} visible WiFi networks`} color="blue" icon={'\u2B21'} />
       </div>
 
@@ -159,8 +174,8 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
           <div className="p-5 grid grid-cols-2 gap-x-8">
             <div>
               <div className="text-[10px] tracking-[2px] text-muted font-mono-noc mb-1">USING NOW</div>
-              <div className="font-display text-[26px] font-bold text-accent leading-tight" style={{ textShadow: '0 0 20px rgba(0,212,255,0.3)' }}>{wifi.ssid || (wifi.connection_type === 'ethernet' ? 'Ethernet' : '\u2014')}</div>
-              <div className="text-xs text-muted mt-0.5">{wifi.authentication !== '\u2014' ? `Authentication \u00B7 ${wifi.authentication}` : wifi.connection_type === 'ethernet' ? 'Wired Ethernet connection' : 'No active Wi-Fi connection'}</div>
+              <div className="font-display text-[26px] font-bold text-accent leading-tight" style={{ textShadow: '0 0 20px rgba(0,212,255,0.3)' }}>{wifi.ssid || (nonWifiType ? connLabel : '\u2014')}</div>
+              <div className="text-xs text-muted mt-0.5">{wifi.authentication !== '\u2014' ? `Authentication \u00B7 ${wifi.authentication}` : nonWifiType ? `${connLabel} connection` : 'No active Wi-Fi connection'}</div>
 
               <div className="text-[10px] tracking-[2px] text-muted font-mono-noc mt-5 mb-2">SIGNAL</div>
               <div className="flex items-center gap-2.5">
@@ -194,7 +209,7 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
             <div>
               <div className="text-[10px] tracking-[2px] text-muted font-mono-noc mb-1">HOTSPOT</div>
               <div className={`font-display text-[26px] font-bold leading-tight ${wifi.hotspot_active ? 'text-accent3' : 'text-muted'}`}>{wifi.hotspot_active ? 'Active' : 'Inactive'}</div>
-              <div className="text-xs text-muted mt-0.5">{wifi.hotspot_clients} clients connected</div>
+              <div className="text-xs text-muted mt-0.5">{wifi.hotspot_clients > 0 && `${wifi.hotspot_clients} clients connected`}</div>
 
               <div className="grid grid-cols-2 gap-4 mt-5">
                 <div>
@@ -213,7 +228,7 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
               <div className="mt-5 bg-accent/[0.04] border border-border-noc rounded-[6px] px-3.5 py-3">
                 <div className="text-[10px] tracking-[2px] text-muted font-mono-noc mb-1">NETWORK SUMMARY</div>
                 <div className="text-xs text-text-noc leading-relaxed">
-                  {stats.total_devices} clients on your network, {wifi.visible_networks} visible APs, {wifi.connected ? (wifi.connection_type === 'ethernet' ? 'Ethernet connected' : 'WiFi connected') : 'disconnected'}.
+                  {stats.total_devices} clients on your network, {wifi.visible_networks} visible APs, {wifi.connected ? (nonWifiType ? `${connLabel} connected` : 'WiFi connected') : 'disconnected'}.
                 </div>
               </div>
             </div>
@@ -227,7 +242,6 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
           <div className="p-5">
             <UsageBar label="Visible Wi-Fi Networks" value={String(wifi.visible_networks)} pct={Math.min(wifi.visible_networks * 5, 100)} gradient="from-[#005080] to-accent" />
             <UsageBar label="WiFi Signal" value={`${wifi.signal}%`} pct={wifi.signal} gradient="from-[#00a060] to-accent2" />
-            <UsageBar label="Hotspot Clients" value={String(wifi.hotspot_clients)} pct={Math.min(wifi.hotspot_clients * 20, 100)} gradient="from-[#804010] to-accent3" />
             <UsageBar label="Known Clients" value={String(stats.total_devices)} pct={Math.min(stats.total_devices * 4, 100)} gradient="from-[#00a060] to-accent2" />
           </div>
         </div>
@@ -236,7 +250,19 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
       <div className="grid grid-cols-[2fr_1fr] gap-4 mb-4">
         <div className="bg-panel border border-border-noc rounded-[10px] overflow-hidden">
           <div className="flex items-center justify-between px-[18px] py-3.5 border-b border-border-noc bg-panel2">
-            <div className="font-display font-bold text-sm tracking-[1px] text-accent flex items-center gap-2">{'\u25B2'} Network Traffic (Mbps)</div>
+            <div className="font-display font-bold text-sm tracking-[1px] text-accent flex items-center gap-2">
+              {'\u25B2'} Network Traffic (Mbps)
+              <span
+                title={lanLabel || 'Aggregate of this host\u2019s interfaces only'}
+                className={`text-[10px] font-mono-noc px-2 py-0.5 rounded border ${
+                  lanLabel
+                    ? 'bg-accent/15 text-accent border-accent/30'
+                    : 'bg-border-noc/30 text-muted border-border-noc'
+                }`}
+              >
+                {lanLabel ? 'LAN-WIDE' : 'THIS HOST'}
+              </span>
+            </div>
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-4 text-[11px] font-mono-noc tracking-[1px]">
                 <span className="flex items-center gap-1.5 text-text-noc"><span className="w-2.5 h-2.5 rounded-[3px] bg-accent" style={{ boxShadow: '0 0 6px var(--color-accent)' }} />INBOUND</span>
@@ -279,11 +305,11 @@ export default function DashboardPage({ scanVersion, token }: { scanVersion?: nu
             </div>
             <div className="mt-3">
               <div className="mb-3.5">
-                <div className="flex justify-between mb-1.5 text-xs"><span className="text-text-noc font-semibold">Network Load</span><span className="font-mono-noc text-accent">{netLoad}%</span></div>
+                <div className="flex justify-between mb-1.5 text-xs"><span className="text-text-noc font-semibold" title="Busiest network link on this machine">Network Load</span><span className="font-mono-noc text-accent">{netLoad}%</span></div>
                 <div className="h-1.5 bg-accent/10 rounded-[3px] overflow-hidden"><div className="h-full rounded-[3px] bg-gradient-to-r from-[#005080] to-accent transition-all duration-1000" style={{ width: `${netLoad}%` }} /></div>
               </div>
               <div className="mb-3.5">
-                <div className="flex justify-between mb-1.5 text-xs"><span className="text-text-noc font-semibold">Bandwidth Usage</span><span className="font-mono-noc text-accent">{bwPct}%</span></div>
+                <div className="flex justify-between mb-1.5 text-xs"><span className="text-text-noc font-semibold" title="Whole-LAN link utilization via the router, or the busiest local link">Bandwidth Usage</span><span className="font-mono-noc text-accent">{bwPct}%</span></div>
                 <div className="h-1.5 bg-accent/10 rounded-[3px] overflow-hidden"><div className="h-full rounded-[3px] bg-gradient-to-r from-[#00a060] to-accent2 transition-all duration-1000" style={{ width: `${bwPct}%` }} /></div>
               </div>
             </div>

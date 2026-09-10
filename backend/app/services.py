@@ -12,11 +12,13 @@ from .database import SessionLocal
 from .events import get_broker
 from .monitor import BandwidthSampler, ProtocolMonitor
 from .scanner import arp_table, get_default_gateway, get_network_cidr, ping_host, run_discovery, usable_unicast_mac
+from .snmp import LanTrafficSampler
 
 settings = get_settings()
 
 bandwidth_sampler = BandwidthSampler()
 protocol_monitor = ProtocolMonitor(settings.sniffing_enabled)
+lan_traffic = LanTrafficSampler()
 
 _gateway_cache: dict[str, float] = {"ip": "", "ts": 0.0}
 _GATEWAY_CACHE_TTL = 30.0
@@ -157,7 +159,7 @@ def bandwidth_payload() -> dict:
         }
         for r in reversed(rows)
     ]
-    return {"current": current, "history": history, "protocols": protocol_monitor.stats()}
+    return {"current": current, "history": history, "protocols": protocol_monitor.stats(), "lan": lan_traffic.last_snapshot()}
 
 
 def interfaces_payload() -> dict:
@@ -484,6 +486,17 @@ async def run_bandwidth_cycle() -> None:
             for s in snapshots
         )
         db.commit()
+    await publish("bandwidth", bandwidth_payload())
+
+
+async def run_lan_traffic_cycle() -> None:
+    """Poll the gateway's SNMP counters for whole-LAN traffic.
+
+    Runs off the request path (blocking UDP in a worker thread). When the
+    router does not answer, the sampler enters a cooldown and the dashboard
+    falls back to this host's per-interface counters.
+    """
+    await asyncio.to_thread(lan_traffic.sample, settings.snmp_host or current_gateway())
     await publish("bandwidth", bandwidth_payload())
 
 

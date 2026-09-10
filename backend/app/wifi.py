@@ -55,9 +55,9 @@ def _parse_interfaces(out: str) -> dict | None:
     if not ssid:
         return None
 
-    bssid = field("BSSID")
-    m = re.search(rf"({_BSSID_RE})", bssid)
-    bssid = m.group(1).replace("-", ":").upper() if m else bssid
+    # Newer Windows builds label this line "AP BSSID"; older ones just "BSSID".
+    bssid_m = re.search(rf"^\s*(?:AP\s+)?BSSID\s*:\s*({_BSSID_RE})", out, re.MULTILINE | re.IGNORECASE)
+    bssid = bssid_m.group(1).replace("-", ":").upper() if bssid_m else ""
 
     sig = field("Signal")
     sig_m = re.search(r"\d+", sig)
@@ -143,6 +143,18 @@ def _is_wifi_adapter(name: str, desc: str) -> bool:
     return any(k in text for k in ("wi-fi", "wireless", "wlan", "802.11"))
 
 
+def _adapter_type(name: str, desc: str) -> str:
+    """Classify an adapter as wifi / ethernet / cellular / vpn by keywords."""
+    if _is_wifi_adapter(name, desc):
+        return "wifi"
+    text = f"{name} {desc}".lower()
+    if any(k in text for k in ("wwan", "mobile broadband", "cellular", "lte")):
+        return "cellular"
+    if any(k in text for k in ("tap", "tun", "wintun", "openvpn", "wireguard", "vpn")):
+        return "vpn"
+    return "ethernet"
+
+
 def _link_mbps(link: str) -> str:
     """'866.7 Mbps' / '1 Gbps' → Mbps number string."""
     m = re.search(r"([\d.]+)\s*(Gbps|Mbps|Kbps)", link, re.IGNORECASE)
@@ -196,18 +208,20 @@ def _windows_fallback() -> dict | None:
     def rank(a: dict) -> tuple[int, int]:
         p = by_alias.get(a.get("Name")) or {}
         online = 1 if p.get("IPv4Connectivity") == "Internet" else 0
-        is_wifi = 1 if _is_wifi_adapter(str(a.get("Name", "")),
-                                        str(a.get("InterfaceDescription", ""))) else 0
+        is_wifi = 1 if _adapter_type(str(a.get("Name", "")),
+                                     str(a.get("InterfaceDescription", ""))) == "wifi" else 0
         return (online, is_wifi)
 
     best = max(adapters, key=rank) if adapters else {}
     prof = by_alias.get(best.get("Name")) or {}
-    wifi_ad = bool(ev) or _is_wifi_adapter(str(best.get("Name", "")),
-                                           str(best.get("InterfaceDescription", "")))
+    atype = _adapter_type(str(best.get("Name", "")),
+                          str(best.get("InterfaceDescription", "")))
+    if ev:
+        atype = "wifi"
     speed = _link_mbps(str(best.get("LinkSpeed") or ""))
 
     conn = {
-        "ssid": "",
+        "ssid": str(prof.get("Name") or "").strip(),
         "bssid": "",
         "signal": 0,
         "channel": "—",
@@ -216,10 +230,9 @@ def _windows_fallback() -> dict | None:
         "authentication": "—",
         "rx_rate": speed,
         "tx_rate": speed,
-        "connection_type": "wifi" if wifi_ad else "ethernet",
+        "connection_type": atype,
     }
-    if wifi_ad:
-        conn["ssid"] = str(prof.get("Name") or "").strip()
+    if atype == "wifi":
         enrich = _event_conn(ev)
         if enrich:
             # event log is the authoritative connect-time record
@@ -302,6 +315,104 @@ def _linux_payload() -> tuple[dict | None, int]:
     return conn, visible
 
 
+_NM_TYPE_MAP = {
+    "802-11-wireless": "wifi",
+    "802-3-ethernet": "ethernet",
+    "gsm": "cellular",
+    "cdma": "cellular",
+    "vpn": "vpn",
+    "wireguard": "vpn",
+    "tun": "tun",
+    "bridge": "bridge",
+    "bond": "bond",
+    "loopback": "loopback",
+    "generic": "generic",
+}
+
+
+def _nm_active() -> list[dict]:
+    """Active NetworkManager connections, WiFi excluded → [{type,name,device}]."""
+    out = _run(["nmcli", "-t", "-f", "TYPE,NAME,DEVICE,STATE", "connection", "show", "--active"], timeout=8)
+    rows = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        fields = line.rsplit(":", 3)  # NAME may hold escaped '\\:' — DEVICE/STATE never do
+        if len(fields) != 4:
+            continue
+        ctype, name, dev, state = fields
+        ctype = _NM_TYPE_MAP.get(ctype, ctype)
+        if ctype == "wifi" or not dev or state != "activated":
+            continue
+        rows.append({"type": ctype, "name": name.replace("\\:", ":"), "device": dev})
+    return rows
+
+
+def _iface_type_linux(iface: str) -> str:
+    if os.path.isdir(f"/sys/class/net/{iface}/wireless"):
+        return "wifi"
+    if iface.startswith(("wwan", "usb", "cdc")):
+        return "cellular"
+    return "ethernet"
+
+
+def _default_iface_linux() -> str:
+    """Best-effort: `ip route`, then /proc/net/route → default-route interface."""
+    m = re.search(r"default\s+via\s+\S+\s+dev\s+(\S+)",
+                  _run(["ip", "route", "show", "default"], timeout=5))
+    if m:
+        return m.group(1)
+    try:
+        with open("/proc/net/route") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == "00000000":
+                    return parts[0]
+    except OSError:
+        pass
+    return ""
+
+
+def _sys_speed(iface: str) -> str:
+    """/sys/class/net/<iface>/speed → '1000' (Mbps); '' when unknown/absent."""
+    try:
+        with open(f"/sys/class/net/{iface}/speed") as f:
+            raw = f.read().strip()
+        return raw if raw.isdigit() else ""
+    except OSError:
+        return ""
+
+
+def _linux_nonwifi_payload() -> dict | None:
+    """Connection snapshot when no Wi-Fi is active: Ethernet, cellular, VPN, …"""
+    rows = _nm_active()
+    if rows:
+        row = rows[0]
+        ctype, name, dev = row["type"], row["name"], row["device"]
+    else:
+        iface = _default_iface_linux()
+        if not iface:
+            return None
+        ctype = _iface_type_linux(iface)
+        if ctype == "wifi":
+            return None
+        name, dev = iface, iface
+    rate = _link_mbps(f"{_sys_speed(dev)} Mbps")
+    return {
+        "ssid": name,
+        "bssid": "",
+        "signal": 0,
+        "channel": "—",
+        "state": "connected",
+        "radio_type": "—",
+        "authentication": "—",
+        "rx_rate": rate,
+        "tx_rate": rate,
+        "connection_type": ctype,
+    }
+
+
 # ---------------------------------------------------------------- macOS
 
 _AIRPORT = "/usr/sbin/airport"  # removed on some newer macOS builds
@@ -372,6 +483,91 @@ def _macos_payload() -> tuple[dict | None, int]:
     if conn is None:
         conn = _system_profiler_conn()
     return conn, visible
+
+
+def _macos_default_iface() -> str:
+    m = re.search(r"interface:\s*(\S+)",
+                  _run(["route", "-n", "get", "default"], timeout=5))
+    return m.group(1) if m else ""
+
+
+def _macos_port_types() -> dict:
+    """Hardware-port map device → 'Wi-Fi'/'Ethernet'/… from networksetup."""
+    out = _run(["networksetup", "-listallhardwareports"], timeout=8)
+    result, port = {}, ""
+    for line in out.splitlines():
+        line = line.strip()
+        m = re.match(r"Hardware Port:\s*(.+)$", line)
+        if m:
+            port = m.group(1).strip()
+            continue
+        m = re.match(r"Device:\s*(\S+)$", line)
+        if m and port:
+            result[m.group(1)] = port
+    return result
+
+
+def _macos_port_type(port: str) -> str:
+    low = port.lower()
+    if "wi-fi" in low or "wlan" in low or "802.11" in low or "airport" in low:
+        return "wifi"
+    if "thunderbolt" in low or "bridge" in low:
+        return "bridge"
+    if "wwan" in low or "cellular" in low or "lte" in low or "mobile broadband" in low:
+        return "cellular"
+    if "vpn" in low or "utun" in low:
+        return "vpn"
+    return "ethernet"  # Ethernet / USB LAN / USB 10/100/1000 LAN …
+
+
+def _macos_eth_speed() -> str:
+    """Best-effort wired link speed ("" when unknown)."""
+    out = _run(["system_profiler", "SPEthernetDataType", "-json"], timeout=25)
+    if not out:
+        return ""
+    try:
+        data = json.loads(out).get("SPEthernetDataType") or []
+    except Exception:
+        return ""
+    for ent in data:
+        if not isinstance(ent, dict):
+            continue
+        for k, v in ent.items():
+            if k.lower().startswith("spethernet_media"):
+                m = re.search(r"(\d+)\s*base", str(v), re.IGNORECASE)
+                if m:
+                    return f"{m.group(1)} Mbps"
+    return ""
+
+
+def _macos_nonwifi_payload() -> dict | None:
+    """Ethernet / VPN / cellular snapshot when no Wi-Fi connection is active."""
+    iface = _macos_default_iface()
+    if not iface:
+        return None
+    ports = _macos_port_types()
+    port = ports.get(iface) or iface
+    ctype = _macos_port_type(port)
+    if ctype == "wifi":
+        return None
+    if port != iface:
+        name = port
+    else:
+        name = {"ethernet": "Ethernet", "vpn": "VPN", "bridge": "Bridge",
+                "cellular": "Cellular"}.get(ctype, port)
+    rate = _macos_eth_speed() if ctype == "ethernet" else ""
+    return {
+        "ssid": name,
+        "bssid": "",
+        "signal": 0,
+        "channel": "—",
+        "state": "connected",
+        "radio_type": "—",
+        "authentication": "—",
+        "rx_rate": rate or "—",
+        "tx_rate": rate or "—",
+        "connection_type": ctype,
+    }
 
 
 # ---------------------------------------------------------------- shared
@@ -445,8 +641,12 @@ def wifi_payload() -> dict:
                     note = "No network connection detected on this machine."
         elif _SYSTEM == "darwin":
             parsed, visible = _macos_payload()
+            if parsed is None:
+                parsed = _macos_nonwifi_payload()
         else:
             parsed, visible = _linux_payload()
+            if parsed is None:
+                parsed = _linux_nonwifi_payload()
 
         if parsed:
             info["connected"] = True

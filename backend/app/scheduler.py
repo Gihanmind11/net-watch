@@ -19,6 +19,7 @@ class MonitorScheduler:
         s.add_job(services.run_scan, "interval", seconds=self._settings.scan_interval_sec, id="scan", **cfg)
         s.add_job(services.run_ping_cycle, "interval", seconds=self._settings.ping_interval_sec, id="ping", **cfg)
         s.add_job(services.run_bandwidth_cycle, "interval", seconds=self._settings.bandwidth_interval_sec, id="bandwidth", **cfg)
+        s.add_job(services.run_lan_traffic_cycle, "interval", seconds=self._settings.snmp_interval_sec, id="lan_traffic", **cfg)
         s.add_job(services.cleanup_old_logs, "cron", hour=3, id="cleanup", max_instances=1, coalesce=True)
         s.add_job(
             services.run_scan,

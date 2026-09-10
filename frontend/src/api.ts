@@ -104,8 +104,24 @@ export interface BandwidthInterface {
   drops_out: number
 }
 
+export interface LanTraffic {
+  available: boolean
+  source: 'snmp'
+  reason?: string
+  gateway?: string
+  interface?: string
+  interface_index?: string
+  mbps_in?: number
+  mbps_out?: number
+  speed_mbps?: number
+  utilization?: number
+  warming_up?: boolean
+  updated_at?: string
+}
+
 export interface BandwidthResponse {
   current: Record<string, BandwidthInterface>
   history: { recorded_at: string; bytes_in: number; bytes_out: number }[]
   protocols?: Record<string, number>
+  lan?: LanTraffic | null
 }
