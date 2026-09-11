@@ -10,16 +10,19 @@ Quickest way (everything in one command, Docker required):
 Local development (no Docker):
 
   1) Backend (Python 3.10+):
-     cd backend
-     python -m venv .venv
-     .venv\Scripts\activate          (Windows)
-     source .venv/bin/activate       (Linux/macOS)
-     pip install -r requirements.txt
-     uvicorn app.main:app --reload --port 8000
+    cd backend
+    python -m venv .venv
+    .venv\Scripts\activate          (Windows)
+    source .venv/bin/activate       (Linux/macOS)
+    pip install -r requirements.txt
+    uvicorn app.main:app --reload --port 8000
 
-     Defaults to SQLite (netmon.db) + in-memory event bus — no extra setup.
-     For PostgreSQL/TimescaleDB + Redis: copy .env.example to .env and set
-     DATABASE_URL / REDIS_URL (or run `docker compose up db redis`).
+    Defaults to SQLite (netmon.db) + in-memory event bus — no extra setup.
+    For PostgreSQL/TimescaleDB + Redis: copy .env.example to .env and set
+    DATABASE_URL / REDIS_URL (or run `docker compose up db redis`).
+
+    Command for generating the SECRET_KEY for backend/.env
+    python -c "import secrets; print(secrets.token_urlsafe(48))"
 
   2) Frontend (Node.js 18+):
      cd frontend

@@ -4,15 +4,13 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, func, select
-
-from . import models
+from . import models, store
 from .config import get_settings
-from .database import SessionLocal
 from .events import get_broker
 from .monitor import BandwidthSampler, ProtocolMonitor
 from .scanner import arp_probe, get_default_gateway, get_network_cidr, ping_host, run_discovery
 from .snmp import LanTrafficSampler
+from .store import Alert, Device
 
 settings = get_settings()
 
@@ -49,7 +47,7 @@ async def publish(event_type: str, payload: dict) -> None:
 
 # ---------------- payload builders ----------------
 
-def display_name(device: models.Device) -> str:
+def display_name(device: Device) -> str:
     """Device name for the DEVICE NAME column.
 
     Use the real reverse-DNS hostname when the device returns one; otherwise
@@ -62,7 +60,7 @@ def display_name(device: models.Device) -> str:
     return device.ip_address or "Unknown device"
 
 
-def device_payload(device: models.Device) -> dict:
+def device_payload(device: Device) -> dict:
     return {
         "id": device.id,
         "device_name": display_name(device),
@@ -83,13 +81,11 @@ def device_payload(device: models.Device) -> dict:
 
 
 def devices_payload() -> dict:
-    with SessionLocal() as db:
-        devices = db.scalars(select(models.Device).order_by(models.Device.ip_address)).all()
-    items = [device_payload(d) for d in devices]
+    items = [device_payload(d) for d in sorted(store.devices(), key=lambda d: d.ip_address)]
     return {"count": len(items), "devices": items}
 
 
-def alert_payload(alert: models.Alert) -> dict:
+def alert_payload(alert: Alert) -> dict:
     return {
         "id": alert.id,
         "level": alert.level,
@@ -100,14 +96,9 @@ def alert_payload(alert: models.Alert) -> dict:
 
 
 def alerts_payload() -> dict:
-    with SessionLocal() as db:
-        alerts = db.scalars(
-            select(models.Alert)
-            .where(models.Alert.resolved == 0)
-            .order_by(models.Alert.created_at.desc())
-            .limit(100)
-        ).all()
-    items = [alert_payload(a) for a in alerts]
+    active = [a for a in store.alerts() if not a.resolved]
+    active.sort(key=lambda a: a.created_at or datetime.min, reverse=True)
+    items = [alert_payload(a) for a in active[:100]]
     return {
         "count": len(items),
         "alerts": items,
@@ -120,13 +111,8 @@ def alerts_payload() -> dict:
 
 
 def stats_payload() -> dict:
-    with SessionLocal() as db:
-        devices = db.scalars(select(models.Device)).all()
-        new_count = db.scalar(
-            select(func.count())
-            .select_from(models.Alert)
-            .where(models.Alert.level == "new", models.Alert.resolved == 0)
-        )
+    devices = store.devices()
+    new_count = sum(1 for a in store.alerts() if a.level == "new" and not a.resolved)
     online = sum(1 for d in devices if d.status == "up")
     offline = sum(1 for d in devices if d.status == "down")
     warning = sum(1 for d in devices if d.status == "warn")
@@ -138,7 +124,7 @@ def stats_payload() -> dict:
         "offline": offline,
         "warning": warning,
         "avg_latency": avg,
-        "new_devices": int(new_count or 0),
+        "new_devices": new_count,
     }
 
 
@@ -160,19 +146,7 @@ def bandwidth_payload() -> dict:
             "drops_in": s["drops_in"],
             "drops_out": s["drops_out"],
         }
-    with SessionLocal() as db:
-        rows = db.scalars(
-            select(models.BandwidthLog).order_by(models.BandwidthLog.recorded_at.desc()).limit(72)
-        ).all()
-    history = [
-        {
-            "recorded_at": r.recorded_at.isoformat(timespec="seconds"),
-            "bytes_in": r.bytes_in,
-            "bytes_out": r.bytes_out,
-        }
-        for r in reversed(rows)
-    ]
-    return {"current": current, "history": history, "protocols": protocol_monitor.stats(), "lan": lan_traffic.last_snapshot()}
+    return {"current": current, "history": [], "protocols": protocol_monitor.stats(), "lan": lan_traffic.last_snapshot()}
 
 
 def interfaces_payload() -> dict:
@@ -180,21 +154,8 @@ def interfaces_payload() -> dict:
 
 
 def top_talkers_payload() -> dict:
-    with SessionLocal() as db:
-        rows = db.scalars(
-            select(models.BandwidthLog).order_by(models.BandwidthLog.recorded_at.desc()).limit(300)
-        ).all()
-    totals: dict[str, dict] = {}
-    for row in rows:
-        t = totals.setdefault(row.interface, {"sent_mb": 0.0, "recv_mb": 0.0})
-        t["recv_mb"] += row.bytes_in / 1e6
-        t["sent_mb"] += row.bytes_out / 1e6
-    talkers = [
-        {"device_name": name, "ip": "", "sent_mb": round(t["sent_mb"], 1), "recv_mb": round(t["recv_mb"], 1)}
-        for name, t in totals.items()
-    ]
-    talkers.sort(key=lambda x: x["sent_mb"] + x["recv_mb"], reverse=True)
-    return {"talkers": talkers[:5]}
+    # Bandwidth history is no longer persisted, so there is nothing to rank.
+    return {"talkers": []}
 
 
 _CORE_TYPES = {"Router", "Firewall", "Switch", "Access Point"}
@@ -222,8 +183,7 @@ _TYPE_MAP = {
 
 
 def topology_payload() -> dict:
-    with SessionLocal() as db:
-        devices = db.scalars(select(models.Device).order_by(models.Device.ip_address)).all()
+    devices = sorted(store.devices(), key=lambda d: d.ip_address)
     if not devices:
         return {"nodes": [], "edges": []}
 
@@ -257,7 +217,7 @@ def topology_payload() -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def _topology_node(device: models.Device, x: int, y: int) -> dict:
+def _topology_node(device: Device, x: int, y: int) -> dict:
     status = device.status if device.status in ("up", "warn", "down") else "down"
     return {
         "id": f"d{device.id}",
@@ -272,28 +232,13 @@ def _topology_node(device: models.Device, x: int, y: int) -> dict:
 
 # ---------------- background jobs ----------------
 
-_CIDR_SETTING_KEY = "last_detected_network_cidr"
-
-
-def _get_setting(db, key: str) -> str:
-    row = db.get(models.AppSetting, key)
-    return row.value if row is not None else ""
-
-
-def _set_setting(db, key: str, value: str) -> None:
-    row = db.get(models.AppSetting, key)
-    if row is None:
-        db.add(models.AppSetting(key=key, value=value))
-    else:
-        row.value = value
-
-
-def _upsert_device(db, entry: dict):
-    device = db.scalar(select(models.Device).where(models.Device.ip_address == entry["ip"]))
+def _upsert_device(entry: dict):
+    device = next((d for d in store.devices() if d.ip_address == entry["ip"]), None)
     is_new = device is None
     status = entry.get("status") or "unknown"
     if device is None:
-        device = models.Device(
+        device = Device(
+            id=store.next_device_id(),
             ip_address=entry["ip"],
             mac_address=entry.get("mac") or "",
             # Never store the raw IP as the hostname: an empty value lets a
@@ -307,7 +252,7 @@ def _upsert_device(db, entry: dict):
             first_seen=utcnow(),
             last_seen=utcnow(),
         )
-        db.add(device)
+        store.devices().append(device)
     else:
         if not device.mac_address and entry.get("mac"):
             device.mac_address = entry["mac"]
@@ -343,26 +288,17 @@ async def run_scan() -> dict:
     cidr = await asyncio.to_thread(get_network_cidr)
     found = await asyncio.to_thread(run_discovery, cidr)
     new_devices = 0
-    with SessionLocal() as db:
-        prev_cidr = _get_setting(db, _CIDR_SETTING_KEY)
-        if prev_cidr and prev_cidr != cidr:
-            # Network changed: drop every previously known device so only
-            # real devices of the new network are shown.
-            db.execute(delete(models.PingHistory))
-            db.execute(delete(models.Alert))
-            db.execute(delete(models.Device))
-        _set_setting(db, _CIDR_SETTING_KEY, cidr)
-        found_ips = {e["ip"] for e in found}
+    found_ips = {e["ip"] for e in found}
+    with store.transaction():
+        devices = store.devices()
         for entry in found:
-            device, is_new = _upsert_device(db, entry)
+            device, is_new = _upsert_device(entry)
             if is_new:
                 new_devices += 1
-                db.add(
-                    models.Alert(
-                        level="new",
-                        message=f"{display_name(device)} ({device.ip_address}) — New device joined network",
-                        device_ip=device.ip_address,
-                    )
+                store.add_alert(
+                    level="new",
+                    message=f"{display_name(device)} ({device.ip_address}) — New device joined network",
+                    device_ip=device.ip_address,
                 )
         if found:
             # Keep only real, currently connected devices: drop anything that
@@ -373,16 +309,15 @@ async def run_scan() -> dict:
             grace_cutoff = utcnow() - timedelta(seconds=settings.stale_device_grace_sec)
             stale = [
                 d
-                for d in db.scalars(select(models.Device)).all()
+                for d in devices
                 if d.ip_address not in found_ips and (d.last_seen or utcnow()) < grace_cutoff
             ]
             if stale:
-                stale_ids = [d.id for d in stale]
-                stale_ips = [d.ip_address for d in stale]
-                db.execute(delete(models.PingHistory).where(models.PingHistory.device_id.in_(stale_ids)))
-                db.execute(delete(models.Alert).where(models.Alert.device_ip.in_(stale_ips)))
-                db.execute(delete(models.Device).where(models.Device.id.in_(stale_ids)))
-        db.commit()
+                stale_ips = {d.ip_address for d in stale}
+                stale_ids = {d.id for d in stale}
+                devices[:] = [d for d in devices if d.id not in stale_ids]
+                store.alerts()[:] = [a for a in store.alerts() if a.device_ip not in stale_ips]
+    await asyncio.to_thread(store.save)
     duration = int((time.perf_counter() - start) * 1000)
     result = {
         "status": "complete",
@@ -409,14 +344,13 @@ async def run_ping_cycle() -> None:
     flapped to "down". A device that answers neither ICMP nor ARP is marked
     offline on the very next cycle.
     """
-    with SessionLocal() as db:
-        devices = db.scalars(select(models.Device)).all()
+    devices = store.devices()
     if not devices:
         return
 
     sem = asyncio.Semaphore(settings.max_concurrent_pings)
 
-    async def check(device: models.Device):
+    async def check(device: Device):
         async with sem:
             # Unicast the probe straight to the known MAC when we have one —
             # avoids Scapy's broadcast fallback for unresolved neighbors.
@@ -432,7 +366,7 @@ async def run_ping_cycle() -> None:
     need_probe = [_d for _d, reply in results if reply is None]
     probe_ok: dict[str, bool] = {}
 
-    async def arp_probe_check(device: models.Device) -> tuple[str, bool]:
+    async def arp_probe_check(device: Device) -> tuple[str, bool]:
         async with sem:
             return device.ip_address, await asyncio.to_thread(arp_probe, device.ip_address)
 
@@ -440,12 +374,9 @@ async def run_ping_cycle() -> None:
         probed = await asyncio.gather(*(arp_probe_check(d) for d in need_probe))
         probe_ok = dict(probed)
 
-    with SessionLocal() as db:
-        history: list[models.PingHistory] = []
+    with store.transaction():
         for device, reply in results:
-            live = db.get(models.Device, device.id)
-            if live is None:
-                continue
+            live = device
             if reply is None and probe_ok.get(live.ip_address):
                 # L2-reachable right now (ping-blocked device): keep alive
                 # without inventing a fake latency value.
@@ -454,14 +385,11 @@ async def run_ping_cycle() -> None:
                 live.fail_count = 0
                 if live.status == "down":
                     live.status = "up"
-                    db.add(
-                        models.Alert(
-                            level="info",
-                            message=f"{display_name(live)} ({live.ip_address}) — Device recovered",
-                            device_ip=live.ip_address,
-                        )
+                    store.add_alert(
+                        level="info",
+                        message=f"{display_name(live)} ({live.ip_address}) — Device recovered",
+                        device_ip=live.ip_address,
                     )
-                history.append(models.PingHistory(device_id=live.id, ping_ms=live.ping_ms or 0.0, status=live.status, checked_at=now))
                 live.last_seen = now
                 continue
             live.total_checks += 1
@@ -470,14 +398,11 @@ async def run_ping_cycle() -> None:
                 live.ping_ms = 0.0
                 if live.status != "down":
                     live.status = "down"
-                    db.add(
-                        models.Alert(
-                            level="crit",
-                            message=f"{display_name(live)} ({live.ip_address}) — Host unreachable",
-                            device_ip=live.ip_address,
-                        )
+                    store.add_alert(
+                        level="crit",
+                        message=f"{display_name(live)} ({live.ip_address}) — Host unreachable",
+                        device_ip=live.ip_address,
                     )
-                history.append(models.PingHistory(device_id=live.id, ping_ms=0.0, status="down", checked_at=now))
             else:
                 ms, ttl = reply
                 live.fail_count = 0
@@ -485,40 +410,32 @@ async def run_ping_cycle() -> None:
                 live.total_ups += 1
                 if live.status == "down":
                     live.status = "up"
-                    db.add(
-                        models.Alert(
-                            level="info",
-                            message=f"{display_name(live)} ({live.ip_address}) — Device recovered",
-                            device_ip=live.ip_address,
-                        )
+                    store.add_alert(
+                        level="info",
+                        message=f"{display_name(live)} ({live.ip_address}) — Device recovered",
+                        device_ip=live.ip_address,
                     )
                 if ms >= settings.latency_crit_ms:
                     if live.status != "warn":
                         live.status = "warn"
-                        db.add(
-                            models.Alert(
-                                level="crit",
-                                message=f"{display_name(live)} ({live.ip_address}) — High latency: {ms:.0f}ms (threshold: {settings.latency_crit_ms}ms)",
-                                device_ip=live.ip_address,
-                            )
+                        store.add_alert(
+                            level="crit",
+                            message=f"{display_name(live)} ({live.ip_address}) — High latency: {ms:.0f}ms (threshold: {settings.latency_crit_ms}ms)",
+                            device_ip=live.ip_address,
                         )
                 elif ms >= settings.latency_warn_ms:
                     if live.status != "warn":
                         live.status = "warn"
-                        db.add(
-                            models.Alert(
-                                level="warn",
-                                message=f"{display_name(live)} ({live.ip_address}) — Latency spike: {ms:.0f}ms detected (threshold: {settings.latency_warn_ms}ms)",
-                                device_ip=live.ip_address,
-                            )
+                        store.add_alert(
+                            level="warn",
+                            message=f"{display_name(live)} ({live.ip_address}) — Latency spike: {ms:.0f}ms detected (threshold: {settings.latency_warn_ms}ms)",
+                            device_ip=live.ip_address,
                         )
                 elif live.status == "warn":
                     live.status = "up"
-                history.append(models.PingHistory(device_id=live.id, ping_ms=ms, status=live.status, checked_at=now))
             live.uptime_pct = round(100.0 * live.total_ups / max(1, live.total_checks), 1)
             live.last_seen = now
-        db.add_all(history)
-        db.commit()
+    await asyncio.to_thread(store.save)
 
     await publish("devices", devices_payload())
     await publish("alerts", alerts_payload())
@@ -529,17 +446,6 @@ async def run_bandwidth_cycle() -> None:
     snapshots = await asyncio.to_thread(bandwidth_sampler.snapshot)
     if not snapshots:
         return
-    with SessionLocal() as db:
-        db.add_all(
-            models.BandwidthLog(
-                interface=s["interface"],
-                bytes_in=int(s["bytes_sec_in"]),
-                bytes_out=int(s["bytes_sec_out"]),
-                recorded_at=utcnow(),
-            )
-            for s in snapshots
-        )
-        db.commit()
     await publish("bandwidth", bandwidth_payload())
 
 
@@ -555,13 +461,11 @@ async def run_lan_traffic_cycle() -> None:
 
 
 async def cleanup_old_logs() -> None:
-    cutoff = utcnow() - timedelta(days=settings.history_retention_days)
     alert_cutoff = utcnow() - timedelta(days=30)
-    with SessionLocal() as db:
-        db.execute(delete(models.BandwidthLog).where(models.BandwidthLog.recorded_at < cutoff))
-        db.execute(delete(models.PingHistory).where(models.PingHistory.checked_at < cutoff))
-        db.execute(delete(models.Alert).where(models.Alert.resolved == 1, models.Alert.created_at < alert_cutoff))
-        db.commit()
+    with store.transaction():
+        alerts = store.alerts()
+        alerts[:] = [a for a in alerts if not (a.resolved and (a.created_at or utcnow()) < alert_cutoff)]
+    await asyncio.to_thread(store.save)
 
 
 # ---------------- demo seed ----------------
@@ -602,21 +506,11 @@ def seed_demo_if_empty() -> None:
     """Populate demo devices/alerts so the dashboard is usable before the first real scan."""
     if not settings.demo_seed_enabled:
         return
-    with SessionLocal() as db:
-        if db.scalar(select(models.Device.id).limit(1)) is not None:
+    with store.transaction():
+        if store.devices():
             return
         for row in _DEMO_DEVICES:
-            db.add(models.Device(**row))
+            store.devices().append(Device(id=store.next_device_id(), first_seen=utcnow(), last_seen=utcnow(), **row))
         for row in _DEMO_ALERTS:
-            db.add(models.Alert(**row))
-        now = utcnow()
-        for i in range(72):
-            db.add(
-                models.BandwidthLog(
-                    interface="eth0",
-                    bytes_in=int(3.5e6),
-                    bytes_out=int(1.6e6),
-                    recorded_at=now - timedelta(seconds=(71 - i) * 5),
-                )
-            )
-        db.commit()
+            store.add_alert(**row)
+    store.save()

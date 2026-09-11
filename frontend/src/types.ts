@@ -68,7 +68,7 @@ export interface Talker {
 }
 
 export interface User {
-  id: number;
+  id: string;
   username: string;
   role: string;
   permissions: string[];

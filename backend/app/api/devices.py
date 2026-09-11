@@ -1,9 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, select
 
-from .. import services
-from ..database import SessionLocal
-from ..models import Alert, BandwidthLog, Device, PingHistory
+from .. import services, store
 from ..security import get_current_user
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
@@ -16,20 +13,17 @@ def list_devices() -> dict:
 
 @router.get("/{ip}")
 def get_device(ip: str) -> dict:
-    with SessionLocal() as db:
-        device = db.scalar(select(Device).where(Device.ip_address == ip))
-        if device is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Device not found")
-        return services.device_payload(device)
+    device = next((d for d in store.devices() if d.ip_address == ip), None)
+    if device is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Device not found")
+    return services.device_payload(device)
 
 
 @router.delete("", dependencies=[Depends(get_current_user)])
 def clear_devices() -> dict:
     """Reset the inventory (demo convenience)."""
-    with SessionLocal() as db:
-        db.execute(delete(PingHistory))
-        db.execute(delete(BandwidthLog))
-        db.execute(delete(Alert))
-        db.execute(delete(Device))
-        db.commit()
+    with store.transaction():
+        store.devices().clear()
+        store.alerts().clear()
+    store.save()
     return {"status": "ok"}
