@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./netmon.db"
     redis_url: str = ""
 
+    # Supabase Storage — devices and alerts are persisted as JSON documents
+    # (object storage has no server-side querying; see app/store.py).
+    supabase_url: str = ""
+    supabase_service_key: str = ""
+    supabase_storage_bucket: str = "netwatch"
+
     cors_origins: list[str] = [
         "http://localhost:5173",
         "http://localhost:8080",
@@ -58,7 +64,6 @@ class Settings(BaseSettings):
     snmp_interval_sec: int = 5
 
     # Storage
-    history_retention_days: int = 30
     demo_seed_enabled: bool = False
     # Grace window before a device absent from discovery is dropped. Wireless
     # clients behind home broadband routers sleep often and disappear from

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import services
+from . import services, store
 from .api import alerts, auth, bandwidth, devices, scan, stats, topology, wifi, ws
 from .config import get_settings
 from .database import init_db
@@ -17,6 +17,7 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    store.load()
     services.seed_demo_if_empty()
     broker = init_broker()
     services.protocol_monitor.start()
