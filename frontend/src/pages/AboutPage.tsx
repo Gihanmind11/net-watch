@@ -43,7 +43,7 @@ export default function AboutPage() {
               { name: 'SQLAlchemy 2.0', pct: 85, color: 'bg-warn' },
               { name: 'Recharts', pct: 85, color: 'bg-accent' },
               { name: 'Scapy', pct: 80, color: 'bg-[#8844ff]' },
-              { name: 'PostgreSQL + TimescaleDB', pct: 78, color: 'bg-accent2' },
+              { name: 'Supabase (Postgres + Storage)', pct: 78, color: 'bg-accent2' },
               { name: 'SNMPv2c + psutil', pct: 72, color: 'bg-accent3' },
               { name: 'APScheduler', pct: 70, color: 'bg-warn' },
               { name: 'Redis pub/sub', pct: 65, color: 'bg-[#8844ff]' },
@@ -71,7 +71,7 @@ export default function AboutPage() {
               { num: '05', text: 'Monitor whole-LAN traffic by polling the router/gateway over SNMPv2c, with local psutil fallback' },
               { num: '06', text: 'Detect new/unauthorized devices and alert on offline hosts, high latency, and port changes' },
               { num: '07', text: 'Push live updates to the dashboard via a Redis pub/sub event bus and WebSockets' },
-              { num: '08', text: 'Secure the REST API with JWT access and refresh tokens, persisted to PostgreSQL + TimescaleDB' },
+              { num: '08', text: 'Secure the REST API with JWT access and refresh tokens, persisted to Supabase Postgres' },
             ].map(obj => (
               <div key={obj.num} className="bg-panel2 border border-border-noc rounded-lg p-3.5 text-[13px] hover:border-accent transition-[border-color]">
                 <div className="font-display text-xl font-extrabold text-accent mb-1.5">{obj.num}</div>
@@ -90,11 +90,11 @@ export default function AboutPage() {
             <div>{'\u2193'} ARP / ICMP / TCP / SNMP</div>
             <div className="text-accent2 my-2">PYTHON NETWORK SCANNER (Scapy ARP + ping-sweep, TCP port scan, psutil + SNMPv2c sampler)</div>
             <div>{'\u2193'} Writes to</div>
-            <div className="text-warn my-2">POSTGRESQL + TIMESCALEDB (devices, ping_history, alerts, bandwidth_logs) — SQLite dev fallback</div>
+            <div className="text-warn my-2">SUPABASE (Postgres: users — Storage: devices &amp; alerts state document)</div>
             <div>{'\u2193'} Queries</div>
             <div className="text-accent3 my-2">FASTAPI + UVICORN REST API (/auth, /devices, /alerts, /bandwidth, /scan, /topology, /stats, /wifi)</div>
             <div>{'\u2193'} Redis pub/sub {'\u2192'} WS push</div>
-            <div className="text-accent my-2">REACT 19 + TYPESCRIPT DASHBOARD (Recharts, Canvas Topology, JWT auth)</div>
+            <div className="text-accent my-2">REACT 19 + TYPESCRIPT DASHBOARD (Recharts, SVG Topology, JWT auth)</div>
           </div>
         </div>
       </div>

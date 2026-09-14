@@ -6,7 +6,7 @@ Real-time LAN monitoring dashboard with device discovery, traffic analysis, aler
 
 - 🖥️ **Frontend:** React 19 + TypeScript + Vite + Tailwind CSS 4 + Recharts
 - ⚙️ **Backend:** FastAPI + Uvicorn + SQLAlchemy 2.0 + APScheduler + WebSockets (JWT auth with access & refresh tokens)
-- 🗄️ **Storage:** PostgreSQL + TimescaleDB (hypertables) — SQLite fallback for dev
+- 🗄️ **Storage:** Supabase — Postgres for users (auth), Storage bucket for the devices/alerts state document and the hourly traffic-history shards
 - ⚡ **Realtime:** Redis pub/sub event bus → WebSocket push to the dashboard (in-memory fallback)
 - 🔍 **Discovery:** Layered Scapy ARP scan → ICMP ping-sweep fallback → system ARP-cache merge (catches wireless clients that ignore probes)
 - 🧰 **Extras:** TCP connect port scanning (no admin rights), optional protocol sniffing, whole-LAN traffic via SNMP, Wi-Fi/hotspot status, psutil bandwidth sampling
@@ -20,7 +20,8 @@ Real-time LAN monitoring dashboard with device discovery, traffic analysis, aler
 
 ## 🚀 Quick Start (Docker — recommended)
 
-One command starts PostgreSQL (TimescaleDB), Redis, the FastAPI backend, and the nginx-served frontend:
+One command starts Redis, the FastAPI backend, and the nginx-served frontend. Data lives in
+Supabase, so create `backend/.env` with your credentials first (compose reads that file):
 
 ```bash
 # from the project root
@@ -29,7 +30,7 @@ docker compose up --build
 
 - 🌐 Dashboard: http://localhost:8080
 - 📚 API docs (OpenAPI/Swagger): http://localhost:8000/docs
-- 🔑 Login: `admin` / `admin` (configurable via `DEMO_USER` / `DEMO_PASSWORD` env vars)
+- 🔑 Login: use an account from the Supabase `users` table (bcrypt-hashed password)
 
 > 💡 Note: for real ARP scans inside Docker, run with `network_mode: host` (Linux) or set `NETWORK_CIDR`
 > and rely on the ping-sweep fallback (no admin rights needed).
@@ -50,8 +51,11 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-Defaults: SQLite database (`netmon.db`) + in-memory event bus — zero external dependencies.
-For TimescaleDB + Redis, set `DATABASE_URL` / `REDIS_URL` (or run `docker compose up db redis`).
+Supabase is required — there is no local database fallback. Put the project's connection
+string in `backend/.env` as `DATABASE_URL` (users/auth), plus `SUPABASE_URL` and
+`SUPABASE_SERVICE_KEY` for the devices/alerts state document and the hourly
+traffic-history shards. The event bus is in-memory
+unless `REDIS_URL` is set.
 
 ### 2. Frontend 🎨
 
@@ -62,9 +66,9 @@ npm run dev
 ```
 
 The Vite dev server proxies `/api` and `/ws` to `http://localhost:8000`, so the dashboard
-talks to the live backend automatically. Open http://localhost:5173 and log in with `admin` / `admin`.
+talks to the live backend automatically. Open http://localhost:5173 and log in with an account from the `users` table.
 
-Demo seeding is disabled by default, so only real devices are shown. An initial ARP scan
+Only real devices are shown. An initial ARP scan
 (or ping sweep) runs 1 second after startup and repeats every 30s. On wireless home
 networks (broadband routers) clients that ignore ICMP/ARP probes are still picked up
 from the system ARP cache, and devices quiet for more than `STALE_DEVICE_GRACE_SEC`
@@ -95,6 +99,35 @@ If the router does not answer (SNMP off, wrong community, unsupported device) th
 sampler backs off for 5 minutes and the dashboard silently falls back to this
 host's traffic — no configuration is required to keep working.
 
+### 📈 Historical traffic (Traffic page)
+
+`/api/bandwidth?minutes=N` serves the series behind the Traffic page's
+`Historical Traffic` chart. The backend averages the 2 s samples into 10 s
+buckets of this host's interfaces (the same figure the live `Last 60 Seconds`
+chart plots) and keeps them in **Supabase Storage**, one JSON document per UTC
+hour:
+
+```
+netwatch/bandwidth/2026-09-15T10.json
+  {"hour": "2026-09-15T10", "bucket_sec": 10,
+   "samples": [{"recorded_at": "2026-09-15T10:00:00", "mbps_in": 12.34,
+                "mbps_out": 5.67, "bytes_in": 1542500, "bytes_out": 708750}, ...]}
+```
+
+Hourly shards keep every upload small (≈35 KB per hour) and make a 6 h range a
+handful of object reads. Only the shard of the bucket that just closed is
+rewritten — once per 10 s, not once per sample — and the recent shards are read
+back into memory at startup, so the chart survives a restart. Long ranges are
+averaged down to at most 600 points, and the daily cleanup deletes shards past
+the retention window (the equivalent of the TimescaleDB retention policy the
+hypertable used to have).
+
+```bash
+TRAFFIC_HISTORY_ENABLED=true    # default; false disables recording/reading
+TRAFFIC_HISTORY_BUCKET_SEC=10   # seconds per chart point
+TRAFFIC_HISTORY_RETENTION_HOURS=48
+TRAFFIC_HISTORY_LOAD_HOURS=6    # shards restored into memory at startup
+```
 ### 📶 Wi-Fi status
 
 The dashboard shows the current wireless connection (SSID, BSSID, signal, channel,
@@ -111,8 +144,10 @@ Network Monitoring System/
 │   ├── app/
 │   │   ├── main.py        # FastAPI app, CORS, lifespan (DB, scheduler, broker)
 │   │   ├── config.py      # Environment-driven settings
-│   │   ├── database.py    # SQLAlchemy engine + TimescaleDB hypertable setup
-│   │   ├── models.py      # devices, ping_history, alerts, bandwidth_logs
+│   │   ├── database.py    # SQLAlchemy engine bound to Supabase Postgres
+│   │   ├── models.py      # SQLAlchemy models (Supabase `users` table)
+│   │   ├── store.py       # Devices/alerts state document in Supabase Storage
+│   │   ├── traffic_history.py # Hourly traffic-history shards in Supabase Storage
 │   │   ├── security.py    # JWT auth (PBKDF2 password hashing)
 │   │   ├── scanner.py     # Scapy ARP scan → ping-sweep fallback → ARP-cache merge + port scan
 │   │   ├── monitor.py     # psutil bandwidth sampler + optional protocol sniffer
@@ -122,7 +157,7 @@ Network Monitoring System/
 │   │   ├── services.py    # Scan/ping/bandwidth jobs, alert rules, payloads
 │   │   ├── scheduler.py   # APScheduler background jobs
 │   │   └── api/           # auth, devices, alerts, bandwidth, topology, stats, scan, wifi, ws
-│   ├── tests/             # Unit tests (e.g. device classifier)
+│   ├── tests/             # Unit tests (device classifier, traffic history)
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
@@ -135,7 +170,7 @@ Network Monitoring System/
 │   ├── Dockerfile         # Multi-stage build → nginx (+ /api and /ws proxy)
 │   ├── nginx.conf
 │   └── package.json
-├── docker-compose.yml     # TimescaleDB + Redis + backend + frontend
+├── docker-compose.yml     # Redis + backend + frontend (Supabase is the datastore)
 ├── network-monitor.html   # Standalone static prototype (no framework)
 ├── PRD.md                 # Product Requirements Document
 ├── how to run.txt         # Quick run instructions
@@ -151,12 +186,12 @@ Network Monitoring System/
 | POST | `/api/auth/logout` | — | Logout |
 | GET | `/api/devices` | — | Device inventory |
 | GET | `/api/devices/{ip}` | — | Single device detail |
-| DELETE | `/api/devices` | Bearer | Reset the inventory (demo convenience) |
+| DELETE | `/api/devices` | Bearer | Reset the inventory |
 | POST | `/api/scan` | Bearer | Trigger a discovery scan |
 | GET | `/api/alerts` | — | Active alerts |
 | DELETE | `/api/alerts/{id}` | Bearer | Resolve an alert |
 | DELETE | `/api/alerts` | Bearer | Resolve all alerts |
-| GET | `/api/bandwidth` | — | Current rates, history, protocol distribution |
+| GET | `/api/bandwidth` | — | Current rates, historical series (`?minutes=`, default 5), protocol distribution |
 | GET | `/api/bandwidth/interfaces` | — | Interface statistics |
 | GET | `/api/bandwidth/top-talkers` | — | Top bandwidth consumers |
 | GET | `/api/topology` | — | Topology nodes/edges |
@@ -172,9 +207,9 @@ Interactive docs: http://localhost:8000/docs
 |-----|----------|------|
 | Scan | 30s | ARP/ping + ARP-cache discovery, port scan, new-device alerts, stale-device cleanup |
 | Ping | 5s | Status, latency, uptime %, latency/offline alerts; ARP-entry fallback keeps ICMP-blocking devices "up" |
-| Bandwidth | 2s | Sample per-interface rates → `bandwidth_logs` |
+| Bandwidth | 2s | Sample per-interface rates → 10 s history buckets → hourly Supabase Storage shards |
 | LAN Traffic | 5s | Poll the router via SNMP → LAN-wide Mbps (local `psutil` fallback) |
-| Cleanup | daily 03:00 | Purge logs past retention window |
+| Cleanup | daily 03:00 | Purge logs and traffic-history shards past the retention window |
 
 An initial scan also runs 1 second after startup.
 
@@ -191,5 +226,5 @@ An initial scan also runs 1 second after startup.
 
 - The dashboard polls every 5s as a fallback and receives push updates via `/ws` for instant refreshes.
 - `network-monitor.html` is a self-contained static prototype of the same UI.
-- Demo seeding is disabled by default (`DEMO_SEED_ENABLED=false`), so the dashboard only ever shows devices found by real scans.
-- All passwords/credentials are LAN-demo defaults — change `DEMO_PASSWORD` and `SECRET_KEY` for anything real.
+- The dashboard only ever shows devices found by real scans.
+- Change `SECRET_KEY` for anything real.

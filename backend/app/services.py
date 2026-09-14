@@ -1,6 +1,7 @@
 """Application services shared by API routers and the background scheduler."""
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timedelta
 
@@ -8,11 +9,25 @@ from . import models, store
 from .config import get_settings
 from .events import get_broker
 from .monitor import BandwidthSampler, ProtocolMonitor
-from .scanner import arp_probe, get_default_gateway, get_network_cidr, ping_host, run_discovery
+from .scanner import (
+    arp_probe,
+    get_default_gateway,
+    get_network_cidr,
+    ping_host,
+    run_discovery,
+    usable_unicast_mac,
+)
 from .snmp import LanTrafficSampler
 from .store import Alert, Device
+from .traffic_history import traffic_history
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
+
+# History window served when a client does not ask for one (the Traffic page
+# always sends its own range; this keeps the WebSocket payload small).
+DEFAULT_HISTORY_MINUTES = 5
 
 bandwidth_sampler = BandwidthSampler()
 protocol_monitor = ProtocolMonitor(settings.sniffing_enabled)
@@ -128,7 +143,13 @@ def stats_payload() -> dict:
     }
 
 
-def bandwidth_payload() -> dict:
+def bandwidth_payload(minutes: int = DEFAULT_HISTORY_MINUTES, fetch_history: bool = False) -> dict:
+    """Current rates plus the historical series for the last ``minutes``.
+
+    ``fetch_history`` is only set by the HTTP endpoint: it may read shards from
+    Supabase Storage that are not in memory yet. The 2 s WebSocket push leaves
+    it off so a background publish can never block on object storage.
+    """
     current: dict[str, dict] = {}
     for s in bandwidth_sampler.last_snapshot():
         current[s["interface"]] = {
@@ -146,7 +167,13 @@ def bandwidth_payload() -> dict:
             "drops_in": s["drops_in"],
             "drops_out": s["drops_out"],
         }
-    return {"current": current, "history": [], "protocols": protocol_monitor.stats(), "lan": lan_traffic.last_snapshot()}
+    return {
+        "current": current,
+        "history": traffic_history.series(minutes, fetch_missing=fetch_history),
+        "history_minutes": max(1, int(minutes)),
+        "protocols": protocol_monitor.stats(),
+        "lan": lan_traffic.last_snapshot(),
+    }
 
 
 def interfaces_payload() -> dict:
@@ -154,7 +181,8 @@ def interfaces_payload() -> dict:
 
 
 def top_talkers_payload() -> dict:
-    # Bandwidth history is no longer persisted, so there is nothing to rank.
+    # Ranking individual consumers needs per-device traffic, which a host's own
+    # interface counters cannot provide; the endpoint stays for API compatibility.
     return {"talkers": []}
 
 
@@ -232,15 +260,54 @@ def _topology_node(device: Device, x: int, y: int) -> dict:
 
 # ---------------- background jobs ----------------
 
+def _norm_mac(value: str | None) -> str:
+    """Lowercased unicast MAC, or "" when the value is missing or unusable."""
+    mac = (value or "").strip().lower()
+    return mac if usable_unicast_mac(mac) else ""
+
+
+def _find_device(entry: dict) -> Device | None:
+    """The stored device a discovery entry belongs to, or None when it is new.
+
+    Identity is the MAC address, not the IP: a DHCP lease change moves a device
+    to a new IP and it must stay one row instead of showing up twice. Rows that
+    share a MAC are folded into one (an IP was reused by a device whose old row
+    still carried that MAC). The IP is only a fallback for entries that have no
+    usable MAC, and only while the row stored for that IP has no MAC yet — a row
+    holding a different MAC belongs to a device that lost that IP, so the entry
+    is a new device and the stale row is left for the prune in `run_scan`.
+    """
+    devices = store.devices()
+    mac = _norm_mac(entry.get("mac"))
+    if mac:
+        matches = [d for d in devices if _norm_mac(d.mac_address) == mac]
+        if matches:
+            # Keep the row already on this IP — its name/type/ports describe the
+            # device as it is now — otherwise the oldest, preserving first_seen.
+            matches.sort(key=lambda d: (d.ip_address != entry["ip"], d.first_seen or datetime.max))
+            keep = matches[0]
+            for duplicate in matches[1:]:
+                if duplicate.first_seen and (
+                    keep.first_seen is None or duplicate.first_seen < keep.first_seen
+                ):
+                    keep.first_seen = duplicate.first_seen
+                devices.remove(duplicate)
+            return keep
+        current = next((d for d in devices if d.ip_address == entry["ip"]), None)
+        return current if current is not None and not _norm_mac(current.mac_address) else None
+    return next((d for d in devices if d.ip_address == entry["ip"]), None)
+
+
 def _upsert_device(entry: dict):
-    device = next((d for d in store.devices() if d.ip_address == entry["ip"]), None)
+    device = _find_device(entry)
     is_new = device is None
+    mac = _norm_mac(entry.get("mac"))
     status = entry.get("status") or "unknown"
     if device is None:
         device = Device(
             id=store.next_device_id(),
             ip_address=entry["ip"],
-            mac_address=entry.get("mac") or "",
+            mac_address=mac,
             # Never store the raw IP as the hostname: an empty value lets a
             # later scan fill in the real reverse-DNS name.
             hostname=entry.get("hostname") or "",
@@ -254,8 +321,10 @@ def _upsert_device(entry: dict):
         )
         store.devices().append(device)
     else:
-        if not device.mac_address and entry.get("mac"):
-            device.mac_address = entry["mac"]
+        # The device may have moved to another IP (DHCP): track it in place.
+        device.ip_address = entry["ip"]
+        if not device.mac_address and mac:
+            device.mac_address = mac
         # Fill in a real hostname when DNS resolves it, replacing an earlier
         # empty value or an IP that was stored as a stand-in name.
         if entry.get("hostname") and (not device.hostname or device.hostname == entry["ip"]):
@@ -291,7 +360,10 @@ async def run_scan() -> dict:
     found_ips = {e["ip"] for e in found}
     with store.transaction():
         devices = store.devices()
-        for entry in found:
+        # Entries carrying a MAC first: the MAC is a device's identity, so it
+        # must claim or re-key its row before an IP-only entry falls back to
+        # whatever row is currently sitting on that IP.
+        for entry in sorted(found, key=lambda e: not _norm_mac(e.get("mac"))):
             device, is_new = _upsert_device(entry)
             if is_new:
                 new_devices += 1
@@ -433,8 +505,11 @@ async def run_ping_cycle() -> None:
                         )
                 elif live.status == "warn":
                     live.status = "up"
+                # Only real evidence of life moves last_seen forward: an
+                # unreachable host must keep the time of its last reply so the
+                # stale-device prune in run_scan can eventually drop it.
+                live.last_seen = now
             live.uptime_pct = round(100.0 * live.total_ups / max(1, live.total_checks), 1)
-            live.last_seen = now
     await asyncio.to_thread(store.save)
 
     await publish("devices", devices_payload())
@@ -446,6 +521,10 @@ async def run_bandwidth_cycle() -> None:
     snapshots = await asyncio.to_thread(bandwidth_sampler.snapshot)
     if not snapshots:
         return
+    # Fold these rates into the traffic history bucket. A closed bucket means the
+    # hour shard changed, so it is uploaded once per bucket — never per sample.
+    if traffic_history.record(snapshots):
+        await asyncio.to_thread(traffic_history.flush)
     await publish("bandwidth", bandwidth_payload())
 
 
@@ -466,51 +545,8 @@ async def cleanup_old_logs() -> None:
         alerts = store.alerts()
         alerts[:] = [a for a in alerts if not (a.resolved and (a.created_at or utcnow()) < alert_cutoff)]
     await asyncio.to_thread(store.save)
-
-
-# ---------------- demo seed ----------------
-
-_DEMO_DEVICES = [
-    {"hostname": "gateway-01", "ip_address": "192.168.1.1", "mac_address": "A4:8C:01:FF:22:11", "device_type": "Router", "os_guess": "RouterOS", "status": "up", "ping_ms": 4.0, "uptime_pct": 99.9, "open_ports": "80,443,22", "vendor": "Cisco"},
-    {"hostname": "core-switch", "ip_address": "192.168.1.2", "mac_address": "B0:CD:02:AA:33:44", "device_type": "Switch", "os_guess": "SwitchOS", "status": "up", "ping_ms": 2.0, "uptime_pct": 99.8, "open_ports": "22,23", "vendor": "Cisco"},
-    {"hostname": "srv-web-01", "ip_address": "192.168.1.10", "mac_address": "C2:EF:03:BB:55:66", "device_type": "Server", "os_guess": "Ubuntu Server 22.04", "status": "up", "ping_ms": 8.0, "uptime_pct": 99.5, "open_ports": "80,443,22"},
-    {"hostname": "srv-db-01", "ip_address": "192.168.1.11", "mac_address": "D4:10:04:CC:77:88", "device_type": "Server", "os_guess": "Ubuntu Server 22.04", "status": "up", "ping_ms": 6.0, "uptime_pct": 99.7, "open_ports": "3306,22"},
-    {"hostname": "srv-mail", "ip_address": "192.168.1.12", "mac_address": "E6:32:05:DD:99:AA", "device_type": "Server", "os_guess": "Debian 12", "status": "warn", "ping_ms": 42.0, "uptime_pct": 97.2, "open_ports": "25,587,993,22"},
-    {"hostname": "workstation-01", "ip_address": "192.168.1.20", "mac_address": "F8:54:06:EE:BB:CC", "device_type": "PC", "os_guess": "Windows 11 Pro", "status": "up", "ping_ms": 12.0, "uptime_pct": 95.1, "open_ports": "135,445,3389"},
-    {"hostname": "workstation-02", "ip_address": "192.168.1.21", "mac_address": "0A:76:07:FF:DD:EE", "device_type": "PC", "os_guess": "Windows 10 Pro", "status": "up", "ping_ms": 15.0, "uptime_pct": 92.3, "open_ports": "135,445"},
-    {"hostname": "workstation-03", "ip_address": "192.168.1.22", "mac_address": "1C:98:08:00:FF:11", "device_type": "PC", "os_guess": "Windows 11 Pro", "status": "up", "ping_ms": 11.0, "uptime_pct": 94.8, "open_ports": "135,445"},
-    {"hostname": "laptop-ceo", "ip_address": "192.168.1.30", "mac_address": "2E:BA:09:11:22:33", "device_type": "Laptop", "os_guess": "macOS Sonoma", "status": "up", "ping_ms": 22.0, "uptime_pct": 78.5, "open_ports": "22,5900"},
-    {"hostname": "printer-floor1", "ip_address": "192.168.1.40", "mac_address": "40:DC:0A:22:44:55", "device_type": "Printer", "os_guess": "Firmware", "status": "down", "ping_ms": 0.0, "uptime_pct": 81.0, "open_ports": ""},
-    {"hostname": "ip-cam-01", "ip_address": "192.168.1.50", "mac_address": "52:FE:0B:33:66:77", "device_type": "Camera", "os_guess": "Firmware", "status": "up", "ping_ms": 18.0, "uptime_pct": 99.1, "open_ports": "80,554"},
-    {"hostname": "ip-cam-02", "ip_address": "192.168.1.51", "mac_address": "64:10:0C:44:88:99", "device_type": "Camera", "os_guess": "Firmware", "status": "down", "ping_ms": 0.0, "uptime_pct": 85.3, "open_ports": ""},
-    {"hostname": "nas-storage", "ip_address": "192.168.1.60", "mac_address": "76:32:0D:55:AA:BB", "device_type": "NAS", "os_guess": "Synology DSM", "status": "up", "ping_ms": 9.0, "uptime_pct": 99.6, "open_ports": "80,443,5000,22"},
-    {"hostname": "wifi-ap-01", "ip_address": "192.168.1.70", "mac_address": "88:54:0E:66:CC:DD", "device_type": "Access Point", "os_guess": "Firmware", "status": "up", "ping_ms": 5.0, "uptime_pct": 99.3, "open_ports": "80"},
-    {"hostname": "wifi-ap-02", "ip_address": "192.168.1.71", "mac_address": "9A:76:0F:77:EE:FF", "device_type": "Access Point", "os_guess": "Firmware", "status": "warn", "ping_ms": 88.0, "uptime_pct": 96.0, "open_ports": "80"},
-    {"hostname": "phone-ext-101", "ip_address": "192.168.1.80", "mac_address": "AC:98:10:88:11:22", "device_type": "VoIP", "os_guess": "Firmware", "status": "up", "ping_ms": 7.0, "uptime_pct": 98.2, "open_ports": "5060,5061"},
-    {"hostname": "phone-ext-102", "ip_address": "192.168.1.81", "mac_address": "BE:BA:11:99:33:44", "device_type": "VoIP", "os_guess": "Firmware", "status": "up", "ping_ms": 8.0, "uptime_pct": 97.9, "open_ports": "5060,5061"},
-    {"hostname": "firewall", "ip_address": "192.168.1.254", "mac_address": "D0:DC:12:AA:55:66", "device_type": "Firewall", "os_guess": "pfSense", "status": "up", "ping_ms": 3.0, "uptime_pct": 99.9, "open_ports": "443,22"},
-]
-
-_DEMO_ALERTS = [
-    {"level": "crit", "message": "srv-mail (192.168.1.12) — High latency: 42ms (threshold: 30ms)", "device_ip": "192.168.1.12"},
-    {"level": "warn", "message": "wifi-ap-02 (192.168.1.71) — Latency spike: 88ms detected", "device_ip": "192.168.1.71"},
-    {"level": "warn", "message": "printer-floor1 (192.168.1.40) — Host unreachable, 3 consecutive failures", "device_ip": "192.168.1.40"},
-    {"level": "info", "message": "ip-cam-02 (192.168.1.51) — Device went offline", "device_ip": "192.168.1.51"},
-    {"level": "new", "message": "workstation-05 (192.168.1.24) — New device joined network", "device_ip": "192.168.1.24"},
-    {"level": "info", "message": "core-switch — Port 14 link state change: UP", "device_ip": "192.168.1.2"},
-    {"level": "info", "message": "Scheduled scan completed — 18 of 24 hosts responded"},
-]
-
-
-def seed_demo_if_empty() -> None:
-    """Populate demo devices/alerts so the dashboard is usable before the first real scan."""
-    if not settings.demo_seed_enabled:
-        return
-    with store.transaction():
-        if store.devices():
-            return
-        for row in _DEMO_DEVICES:
-            store.devices().append(Device(id=store.next_device_id(), first_seen=utcnow(), last_seen=utcnow(), **row))
-        for row in _DEMO_ALERTS:
-            store.add_alert(**row)
-    store.save()
+    # Drop the historical traffic shards past the retention window (Storage has
+    # no retention policy of its own, unlike the TimescaleDB hypertable it replaced).
+    removed = await asyncio.to_thread(traffic_history.purge)
+    if removed:
+        logger.info("Purged %d expired traffic-history shard(s)", removed)

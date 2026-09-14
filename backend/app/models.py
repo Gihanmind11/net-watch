@@ -8,7 +8,7 @@ from .database import Base
 
 
 def utcnow() -> datetime:
-    """Naive UTC timestamp (SQLite/Postgres dialect-safe, lexicographically sortable)."""
+    """Naive UTC timestamp (lexicographically sortable, dialect-safe for Postgres)."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 

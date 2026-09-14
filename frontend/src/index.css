@@ -89,7 +89,7 @@ body::before {
   z-index: 0;
 }
 
-::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--color-bg-noc); }
 ::-webkit-scrollbar-thumb { background: var(--color-border-noc); border-radius: 2px; }
 

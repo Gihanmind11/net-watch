@@ -12,6 +12,9 @@ Bucket layout::
         {"updated_at": ..., "device_seq": N, "alert_seq": M,
          "devices": [...], "alerts": [...]}
 
+    netwatch/bandwidth/2026-09-15T10.json
+        {"hour": ..., "bucket_sec": 10, "samples": [...]}   # see app/traffic_history.py
+
 Both collections share one object so that a save is a single atomic upload and
 a failed save can never leave devices and alerts out of sync.
 
@@ -226,6 +229,70 @@ def _write_document(path: str, payload: str) -> bool:
         return True
     except (urllib.error.URLError, urllib.error.HTTPError) as exc:
         logger.error("Supabase Storage write failed for %s: %s", path, exc)
+        return False
+
+
+# ---------------- generic object access ----------------
+
+def storage_configured() -> bool:
+    """True when a usable Supabase Storage credential is configured."""
+    return _configured()
+
+
+def read_json(path: str) -> dict | None:
+    """Read a JSON object: ``{}`` when it does not exist yet, ``None`` on failure."""
+    return _read_document(path)
+
+
+def write_json(path: str, payload: str) -> bool:
+    """Create or replace one object with ``payload`` (already serialized)."""
+    return _write_document(path, payload)
+
+
+def list_paths(prefix: str = "") -> list[str] | None:
+    """Object names stored under ``prefix``, or ``None`` when listing failed.
+
+    Names come back relative to the prefix (``2026-09-15T10.json`` for prefix
+    ``bandwidth/``); callers that need the full path must re-attach the prefix.
+    """
+    if not _configured():
+        return None
+    url = f"{settings.supabase_url.rstrip('/')}/storage/v1/object/list/{settings.supabase_storage_bucket}"
+    body = json.dumps(
+        {"prefix": prefix, "limit": 1000, "offset": 0, "sortBy": {"column": "name", "order": "asc"}}
+    )
+    request = urllib.request.Request(url, data=body.encode("utf-8"), headers=_headers(), method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError) as exc:
+        logger.error("Supabase Storage list failed for %r: %s", prefix, exc)
+        return None
+    if not isinstance(payload, list):
+        return None
+    return [entry["name"] for entry in payload if isinstance(entry, dict) and entry.get("name")]
+
+
+def delete_paths(paths: list[str]) -> bool:
+    """Delete objects in one bulk request. True when all of them are gone."""
+    if not _configured():
+        return False
+    targets = [path for path in paths if path]
+    if not targets:
+        return True
+    url = f"{settings.supabase_url.rstrip('/')}/storage/v1/object/{settings.supabase_storage_bucket}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"prefixes": targets}).encode("utf-8"),
+        headers=_headers(),
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            response.read()
+        return True
+    except (urllib.error.URLError, urllib.error.HTTPError) as exc:
+        logger.error("Supabase Storage delete failed for %s: %s", targets, exc)
         return False
 
 

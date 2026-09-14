@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { getBandwidth } from '../api'
-import type { BandwidthInterface } from '../api'
+import type { BandwidthHistoryPoint, BandwidthInterface } from '../api'
 
 interface TrafficPoint { time: string; in: number; out: number }
-interface HistoryPoint { recorded_at: string; bytes_in: number; bytes_out: number }
 
 type TimeRange = '5m' | '15m' | '1h' | '6h'
 
@@ -13,6 +12,33 @@ const TIME_RANGES: Record<TimeRange, { label: string; minutes: number }> = {
   '15m': { label: '15 Min', minutes: 15 },
   '1h': { label: '1 Hour', minutes: 60 },
   '6h': { label: '6 Hours', minutes: 360 },
+}
+
+// The backend closes one history bucket every `traffic_history_bucket_sec`
+// (10 s), so refreshing at that cadence keeps the chart one bucket behind live.
+const HISTORY_REFRESH_MS = 10_000
+
+/** Bucket timestamps arrive as naive UTC ISO strings; pin the zone so the
+ * labels show local time instead of the UTC wall clock. */
+function bucketLabel(recordedAt: string, withSeconds: boolean): string {
+  const isZoned = /([zZ]|[+-]\d{2}:\d{2})$/.test(recordedAt)
+  const at = new Date(isZoned ? recordedAt : `${recordedAt}Z`)
+  return at.toLocaleTimeString('en-GB', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    ...(withSeconds ? { second: '2-digit' } : {}),
+  })
+}
+
+/** Backend history rows → chart points (Mbps, oldest first). */
+function historyToPoints(rows: BandwidthHistoryPoint[], withSeconds: boolean): TrafficPoint[] {
+  return rows.map(row => ({
+    time: bucketLabel(row.recorded_at, withSeconds),
+    // New rows carry the rate directly; the byte counts (bytes/s) are the fallback.
+    in: +(row.mbps_in ?? (row.bytes_in * 8) / 1_000_000).toFixed(2),
+    out: +(row.mbps_out ?? (row.bytes_out * 8) / 1_000_000).toFixed(2),
+  }))
 }
 
 export default function TrafficPage() {
@@ -55,27 +81,26 @@ export default function TrafficPage() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [])
 
-  // Fetch historical data when time range changes
+  // Historical traffic for the selected range. The window is handed to the
+  // backend (`/api/bandwidth?minutes=N`), which serves it from the series kept
+  // in Supabase Storage; the poll picks up each newly closed 10 s bucket.
   useEffect(() => {
-    getBandwidth()
-      .then(data => {
-        const history: HistoryPoint[] = data.history || []
-        // Aggregate by timestamp
-        const aggregated: Record<string, { in: number; out: number }> = {}
-        for (const row of history) {
-          const time = new Date(row.recorded_at).toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit' })
-          if (!aggregated[time]) aggregated[time] = { in: 0, out: 0 }
-          aggregated[time].in += (row.bytes_in * 8 / 1_000_000)
-          aggregated[time].out += (row.bytes_out * 8 / 1_000_000)
-        }
-        const points = Object.entries(aggregated).map(([time, v]) => ({
-          time,
-          in: +v.in.toFixed(2),
-          out: +v.out.toFixed(2),
-        }))
-        setHistoryData(points)
-      })
-      .catch(() => {})
+    const { minutes } = TIME_RANGES[timeRange]
+    const withSeconds = minutes <= 15
+    let active = true
+    const fetchHistory = () => {
+      getBandwidth(minutes)
+        .then(data => {
+          if (active) setHistoryData(historyToPoints(data.history || [], withSeconds))
+        })
+        .catch(() => {})
+    }
+    fetchHistory()
+    const id = setInterval(fetchHistory, HISTORY_REFRESH_MS)
+    return () => {
+      active = false
+      clearInterval(id)
+    }
   }, [timeRange])
 
   const getUtilColor = (util: number) => {
@@ -160,7 +185,9 @@ export default function TrafficPage() {
               </AreaChart>
             </ResponsiveContainer>
           ) : (
-            <div className="flex items-center justify-center h-full text-muted text-sm font-mono-noc">No historical data yet</div>
+            <div className="flex items-center justify-center h-full text-muted text-sm font-mono-noc text-center px-6">
+              No historical data yet {'\u2014'} the first point appears within 10 s and is kept in Supabase Storage
+            </div>
           )}
         </div>
       </div>

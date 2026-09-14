@@ -34,7 +34,7 @@ try:
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Diffie-Hellman over finite fields .*")
-        from scapy.all import ARP, Ether, ICMP, IP, sr1, srp
+        from scapy.all import ARP, Ether, ICMP, IP, sr1, srp, conf as _scapy_conf
 
     HAVE_SCAPY = True
 
@@ -50,60 +50,24 @@ except Exception:
 
 _IS_WINDOWS = platform.system().lower() == "windows"
 
-# OUI prefixes -> vendor. Ordered by first 6 hex digits of the MAC.
-_VENDOR_OUIS = {
-    "A4:8C:01": "Cisco",
-    "B0:CD:02": "Cisco",
-    "00:1A:A9": "Hewlett Packard",
-    "00:1B:21": "Intel",
-    "3C:D9:2B": "Dell",
-    "F8:75:A4": "Dell",
-    "00:16:CB": "Apple",
-    "3C:22:FB": "Apple",
-    "A4:83:E7": "Apple",
-    "F0:18:98": "Apple",
-    "70:9E:29": "Samsung",
-    "00:23:24": "Samsung",
-    "5C:E8:EB": "Samsung",
-    "88:66:5A": "TP-Link",
-    "50:C7:BF": "TP-Link",
-    "F4:F2:6D": "TP-Link",
-    "00:0C:29": "VMware",
-    "00:50:56": "VMware",
-    "08:00:27": "Oracle VirtualBox",
-    "44:4C:A8": "Google",
-    "9C:FC:E8": "Google",
-    "B4:5D:50": "Xiaomi",
-    "64:CC:2E": "Xiaomi",
-    "28:6C:07": "Xiaomi",
-    "48:0F:CF": "Huawei",
-    "00:E0:FC": "Huawei",
-    "8C:1F:64": "Huawei",
-    "F0:9F:C2": "D-Link",
-    "28:10:7B": "D-Link",
-    "C0:3F:0E": "Netgear",
-    "20:E5:2A": "Netgear",
-    "AC:84:C6": "Netgear",
-    "50:46:4D": "Motorola",
-    "00:9A:CD": "HMD/Nokia",
-    "04:C5:A4": "Tecno",
-    "A0:CE:C8": "Infinix",
-    "B0:41:1A": "Sony",
-    "F8:95:C7": "Oppo",
-    "2C:8A:72": "Oppo",
-    "FC:64:BA": "OnePlus",
-    "40:88:05": "LG",
-    "58:C3:8B": "Asus",
-    "04:D9:F5": "Asus",
-    "E8:48:B8": "Asus",
-    "00:22:FB": "Raspberry Pi",
-    "DC:A6:32": "Raspberry Pi",
-    "E4:5F:01": "Raspberry Pi",
-    "B8:27:EB": "Raspberry Pi",
-}
+# Manufacturer names come from the OUI registry bundled with Scapy: a full copy
+# of Wireshark's `manuf` file, built from the IEEE OUI listings (~38k prefixes).
+# Every device therefore reports its real registered vendor instead of a
+# hand-maintained subset. None when Scapy is unavailable.
+_MANUF_DB = _scapy_conf.manufdb if HAVE_SCAPY else None
 
-# Vendors that are almost always network infrastructure
-_ROUTER_VENDORS = {"Cisco", "TP-Link", "Netgear", "D-Link", "Huawei", "Asus", "Linksys"}
+# Vendors that are almost always network infrastructure, and vendors that imply
+# a device class. These are matched case-insensitively as substrings because the
+# registry stores full company names ("Cisco Systems, Inc", "Apple, Inc.").
+_ROUTER_VENDORS = {"cisco", "tp-link", "netgear", "d-link", "huawei", "asus", "linksys"}
+_APPLE_VENDORS = {"apple"}
+_PRINTER_VENDORS = {"hewlett", "hp inc"}
+
+
+def _vendor_matches(vendor: str, names: set[str]) -> bool:
+    """True when `vendor` names one of `names` (case-insensitive substring)."""
+    value = (vendor or "").lower()
+    return bool(value) and any(name in value for name in names)
 
 
 def get_network_cidr() -> str:
@@ -367,8 +331,19 @@ def resolve_hostname(ip: str, timeout: float = 2.0) -> str:
 
 
 def oui_vendor(mac: str) -> str:
-    prefix = mac.upper().replace("-", ":")[:8]
-    return _VENDOR_OUIS.get(prefix, "")
+    """Vendor registered for the MAC's OUI, from the bundled OUI registry.
+
+    Randomized (locally administered) addresses are never registered, and
+    unregistered prefixes are reported as empty rather than echoing the
+    address back.
+    """
+    if _MANUF_DB is None or not usable_unicast_mac(mac):
+        return ""
+    normalized = mac.upper().replace("-", ":")
+    name = _MANUF_DB._get_manuf(normalized)
+    if not name or name.upper() == normalized:
+        return ""
+    return name
 
 
 def guess_os(ttl: int | None, hostname: str = "", vendor: str = "") -> str:
@@ -397,7 +372,7 @@ def guess_os(ttl: int | None, hostname: str = "", vendor: str = "") -> str:
     if ttl == 255:
         return "Router OS"
     if ttl <= 64:
-        if vendor == "Apple":
+        if _vendor_matches(vendor, _APPLE_VENDORS):
             return "macOS/iOS"
         return "Linux/Android"
     if ttl <= 128:
@@ -416,7 +391,7 @@ def classify_device(
     """Best-effort device type from gateway IP, vendor, hostname and TTL."""
     if ip == gateway:
         return "Gateway"
-    if ttl == 255 or vendor in _ROUTER_VENDORS:
+    if ttl == 255 or _vendor_matches(vendor, _ROUTER_VENDORS):
         return "Router"
     name = (hostname or "").lower()
     if "ipad" in name:
@@ -425,7 +400,7 @@ def classify_device(
         return "Phone"
     if name.startswith(("desktop-", "laptop-", "pc-", "workstation", "win-", "macbook")) or "imac" in name or "windows" in name or "microsoft" in name:
         return "Computer"
-    if "print" in name or vendor in ("Hewlett Packard",):
+    if "print" in name or _vendor_matches(vendor, _PRINTER_VENDORS):
         return "Printer"
     if ttl is None and randomized_mac(mac):
         # No ICMP/TTL evidence, but the host uses a randomized (locally
