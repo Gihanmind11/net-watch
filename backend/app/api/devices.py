@@ -21,7 +21,7 @@ def get_device(ip: str) -> dict:
 
 @router.delete("", dependencies=[Depends(get_current_user)])
 def clear_devices() -> dict:
-    """Reset the inventory (demo convenience)."""
+    """Reset the inventory."""
     with store.transaction():
         store.devices().clear()
         store.alerts().clear()

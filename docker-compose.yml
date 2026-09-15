@@ -1,19 +1,4 @@
 services:
-  db:
-    image: timescale/timescaledb:latest-pg16
-    environment:
-      POSTGRES_USER: netmon
-      POSTGRES_PASSWORD: netmon
-      POSTGRES_DB: netmon
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U netmon -d netmon"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    restart: unless-stopped
-
   redis:
     image: redis:7-alpine
     healthcheck:
@@ -25,19 +10,19 @@ services:
 
   backend:
     build: ./backend
+    # Supabase is the only datastore, so its credentials (DATABASE_URL,
+    # SUPABASE_URL, SUPABASE_SERVICE_KEY) are read from backend/.env. There is
+    # no local database service.
+    env_file:
+      - ./backend/.env
     environment:
-      DATABASE_URL: postgresql+psycopg://netmon:netmon@db:5432/netmon
+      # Everything else (DATABASE_URL, SUPABASE_*, SECRET_KEY, NETWORK_CIDR)
+      # comes from backend/.env above; these two are container-specific.
       REDIS_URL: redis://redis:6379/0
-      NETWORK_CIDR: ${NETWORK_CIDR:-192.168.1.0/24}
-      DEMO_USER: ${DEMO_USER:-admin}
-      DEMO_PASSWORD: ${DEMO_PASSWORD:-admin}
-      SECRET_KEY: ${SECRET_KEY:-please-change-me-in-production}
       SNIFFING_ENABLED: "false"
     ports:
       - "8000:8000"
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -49,6 +34,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-
-volumes:
-  pgdata:

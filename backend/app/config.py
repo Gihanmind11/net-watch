@@ -9,8 +9,10 @@ class Settings(BaseSettings):
     app_name: str = "NetWatch API"
     version: str = "2.0.0"
 
-    # Database — PostgreSQL + TimescaleDB recommended; SQLite for zero-setup dev.
-    database_url: str = "sqlite:///./netmon.db"
+    # Database — Supabase Postgres. Required: set DATABASE_URL in backend/.env
+    # to the project's connection string (Supabase → Project Settings →
+    # Database → Connection string). There is no local database fallback.
+    database_url: str = ""
     redis_url: str = ""
 
     # Supabase Storage — devices and alerts are persisted as JSON documents
@@ -25,9 +27,7 @@ class Settings(BaseSettings):
         "http://localhost:3000",
     ]
 
-    # Auth (single demo admin account)
-    demo_user: str = "admin"
-    demo_password: str = "admin"
+    # Auth
     secret_key: str = "please-change-me-in-production"
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 7
@@ -63,8 +63,18 @@ class Settings(BaseSettings):
     snmp_interface: str = ""  # empty → auto-pick the router's busiest interface
     snmp_interval_sec: int = 5
 
+    # Historical traffic (the Traffic page's "Historical Traffic" chart).
+    # Rates are averaged into buckets of `traffic_history_bucket_sec` seconds and
+    # each closed bucket is uploaded once, as one small JSON document per UTC
+    # hour under the `bandwidth/` prefix of the Storage bucket. Sharding by hour
+    # keeps every write small (an hour is ~360 buckets ≈ 35 KB) and makes a long
+    # dashboard range a handful of object reads.
+    traffic_history_enabled: bool = True
+    traffic_history_bucket_sec: int = 10
+    traffic_history_retention_hours: int = 48
+    traffic_history_load_hours: int = 6  # shards read back into memory at startup
+
     # Storage
-    demo_seed_enabled: bool = False
     # Grace window before a device absent from discovery is dropped. Wireless
     # clients behind home broadband routers sleep often and disappear from
     # ARP/ping for a while — a single missed scan is not proof of disconnect.

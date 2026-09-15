@@ -1,13 +1,25 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from .. import services
 
 router = APIRouter(prefix="/api/bandwidth", tags=["bandwidth"])
 
+# The Traffic page's range buttons map straight onto this window.
+_MIN_HISTORY_MINUTES = 1
+_MAX_HISTORY_MINUTES = 1440
+
 
 @router.get("")
-def bandwidth() -> dict:
-    return services.bandwidth_payload()
+def bandwidth(
+    minutes: int = Query(
+        services.DEFAULT_HISTORY_MINUTES,
+        ge=_MIN_HISTORY_MINUTES,
+        le=_MAX_HISTORY_MINUTES,
+        description="Historical window in minutes (defaults to the last 5).",
+    ),
+) -> dict:
+    """Current rates, interface statistics and the historical traffic series."""
+    return services.bandwidth_payload(minutes=minutes, fetch_history=True)
 
 
 @router.get("/interfaces")

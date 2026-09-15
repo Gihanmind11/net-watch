@@ -49,7 +49,7 @@ async function http<T>(path: string, init: RequestInit = {}): Promise<T> {
       headers: { ...authHeaders(token), ...(init.headers as Record<string, string> | undefined) },
     })
 
-  let token = getStoredToken()
+  const token = getStoredToken()
   let res = await doFetch(token)
 
   if (res.status === 401 && token) {
@@ -94,7 +94,9 @@ export const resolveAlert = (alertId: number) => http<{ status: string }>(`/aler
 
 export const clearAlerts = () => http<{ status: string }>('/alerts', { method: 'DELETE' })
 
-export const getBandwidth = () => http<BandwidthResponse>('/bandwidth')
+/** `minutes` selects the historical window the backend returns in `history`. */
+export const getBandwidth = (minutes?: number) =>
+  http<BandwidthResponse>(minutes ? `/bandwidth?minutes=${Math.round(minutes)}` : '/bandwidth')
 
 export const getTopology = () => http<TopologyData>('/topology')
 
@@ -167,9 +169,22 @@ export interface LanTraffic {
   updated_at?: string
 }
 
+/** One point of the historical series. The backend stores a bucket per
+ * `traffic_history_bucket_sec` (10 s) and averages long ranges down, so
+ * `bucket_sec` is the real width of the point's window. */
+export interface BandwidthHistoryPoint {
+  recorded_at: string
+  mbps_in?: number
+  mbps_out?: number
+  bytes_in: number
+  bytes_out: number
+  bucket_sec?: number
+}
+
 export interface BandwidthResponse {
   current: Record<string, BandwidthInterface>
-  history: { recorded_at: string; bytes_in: number; bytes_out: number }[]
+  history: BandwidthHistoryPoint[]
+  history_minutes?: number
   protocols?: Record<string, number>
   lan?: LanTraffic | null
 }

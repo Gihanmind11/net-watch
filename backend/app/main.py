@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,9 @@ from .config import get_settings
 from .database import init_db
 from .events import init_broker
 from .scheduler import MonitorScheduler
+from .traffic_history import traffic_history
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -18,7 +22,12 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     init_db()
     store.load()
-    services.seed_demo_if_empty()
+    # Read the persisted traffic history back before the scheduler records new
+    # buckets, so the Traffic page has the series immediately after a restart
+    # (blocking object reads → worker thread).
+    loaded = await asyncio.to_thread(traffic_history.load)
+    if loaded:
+        logger.info("Restored %d traffic-history shard(s) (%d buckets) from Storage", loaded, len(traffic_history))
     broker = init_broker()
     services.protocol_monitor.start()
     app.state.scan_lock = asyncio.Lock()
@@ -28,6 +37,8 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     yield
     scheduler.stop()
+    # Persist the buckets recorded since the last hourly shard write.
+    await asyncio.to_thread(traffic_history.flush)
     services.protocol_monitor.stop()
     await broker.close()
 

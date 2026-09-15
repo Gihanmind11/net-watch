@@ -5,8 +5,15 @@ from .config import get_settings
 
 settings = get_settings()
 
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, pool_pre_ping=True, connect_args=connect_args)
+if not settings.database_url:
+    raise RuntimeError(
+        "DATABASE_URL is not set. NetWatch keeps users in Supabase Postgres — copy the "
+        "project's connection string (Supabase → Project Settings → Database → Connection "
+        "string) into backend/.env as DATABASE_URL. There is no local database fallback."
+    )
+
+# pool_pre_ping absorbs the idle-connection drops of the Supabase pooler.
+engine = create_engine(settings.database_url, pool_pre_ping=True)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
