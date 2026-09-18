@@ -42,11 +42,15 @@ export interface TopologyNode {
   x: number;
   y: number;
   status: 'up' | 'warn' | 'down';
+  is_gateway?: boolean;
+  is_self?: boolean;
 }
 
 export interface TopologyData {
   nodes: TopologyNode[];
   edges: [string, string][];
+  gateway_ip?: string;
+  hotspot?: boolean;
 }
 
 export interface NetworkInterface {
@@ -86,6 +90,9 @@ export interface ScanResult {
   new_devices: number;
   scan_duration_ms: number;
   timestamp: string;
+  network_cidr?: string;
+  network_changed?: boolean;
+  cleared_devices?: number;
 }
 
 export interface WifiInfo {
